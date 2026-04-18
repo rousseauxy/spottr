@@ -1,6 +1,6 @@
 # Go build output
-spottr
-spotnet
+/spottr
+/spotnet
 
 # Frontend build artifacts (built by Dockerfile, not committed)
 web/node_modules/
