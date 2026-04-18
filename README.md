@@ -86,7 +86,7 @@ Add Spottr as a custom Newznab indexer in Prowlarr:
 cd web && npm ci && npm run build && cd ..
 
 # Backend (requires Go 1.22+)
-go build -o spottr ./cmd/spotnet
+go build -o spottr ./cmd/spottr
 
 # Or use Docker
 docker build -t spottr .
@@ -95,7 +95,7 @@ docker build -t spottr .
 ## Project layout
 
 ```
-cmd/spotnet/         — entrypoint
+cmd/spottr/          — entrypoint
 internal/
   api/router.go      — chi router: Newznab + JSON API + auth endpoints
   auth/session.go    — session store, rate limiting, cookie helpers
@@ -113,50 +113,3 @@ docker-compose.yml   — deployment compose (pulls from GHCR)
 ## License
 
 MIT
-
-- **SABnzbd client** — add by URL, add by content (multipart), queue status
-- **Newznab API** — `/api?t=caps`, `/api?t=search` (Prowlarr/Sonarr/Radarr compatible)
-- **Internal JSON API** — `/v1/spots`, search, category filter, send-to-SAB, SAB queue
-
-### What still needs building
-
-- [ ] JWT auth (login endpoint + middleware validation)
-- [ ] NZB body fetch via NNTP (BODY command for `nzb_id`)
-- [ ] SvelteKit frontend
-- [ ] Per-user state (bookmarks, read/downloaded)
-- [ ] RSA signature verification for spots
-- [ ] Admin panel (user management, sync status)
-
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `NNTP_HOST` | required | Usenet server hostname |
-| `NNTP_PORT` | 119 | NNTP port |
-| `NNTP_TLS` | false | Use TLS |
-| `NNTP_USER` | | Username |
-| `NNTP_PASS` | | Password |
-| `NNTP_MAX_CONNS` | 4 | Parallel connections |
-| `SYNC_INTERVAL` | 15m | How often to check for new spots |
-| `SYNC_LOOKBACK` | 500000 | Articles to look back on first run |
-| `SAB_HOST` | | SABnzbd hostname (optional) |
-| `SAB_PORT` | 8080 | SABnzbd port |
-| `SAB_API_KEY` | | SABnzbd API key |
-| `JWT_SECRET` | required | Secret for JWT signing |
-| `DB_PATH` | /data/spottr.db | SQLite file path |
-| `LISTEN_ADDR` | :8080 | HTTP listen address |
-
-### Quick start
-
-```bash
-cd /mnt/user/spotnet
-# Fill in your NNTP credentials in docker-compose.yml
-docker compose up --build
-```
-
-### Prowlarr integration
-
-Add as a custom Newznab indexer:
-- URL: `http://spotnet:8080`
-- API path: `/api`
-- API key: any user's API key from the users table
