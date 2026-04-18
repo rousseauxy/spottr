@@ -143,7 +143,7 @@ MIT
 | `SAB_PORT` | 8080 | SABnzbd port |
 | `SAB_API_KEY` | | SABnzbd API key |
 | `JWT_SECRET` | required | Secret for JWT signing |
-| `DB_PATH` | /data/spotnet.db | SQLite file path |
+| `DB_PATH` | /data/spottr.db | SQLite file path |
 | `LISTEN_ADDR` | :8080 | HTTP listen address |
 
 ### Quick start

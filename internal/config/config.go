@@ -50,7 +50,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:      envOr("LISTEN_ADDR", ":8080"),
-		DBPath:          envOr("DB_PATH", "/data/spotnet.db"),
+		DBPath:          envOr("DB_PATH", "/data/spottr.db"),
 		NNTPHost:        envOr("NNTP_HOST", ""),
 		NNTPPort:        envInt("NNTP_PORT", 119),
 		NNTPUser:        envOr("NNTP_USER", ""),
