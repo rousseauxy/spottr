@@ -1,0 +1,28 @@
+# Go build output
+spottr
+spotnet
+
+# Frontend build artifacts (built by Dockerfile, not committed)
+web/node_modules/
+web/.svelte-kit/
+web/dist/
+internal/webstatic/dist/
+
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Data
+data/
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

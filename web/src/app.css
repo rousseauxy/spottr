@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0f1117;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #374151;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #4b5563;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1.5 font-medium rounded-lg transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white px-4 py-2;
+  }
+
+  .btn-sm {
+    @apply btn px-3 py-1.5 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200;
+  }
+
+  .btn-ghost {
+    @apply btn px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200 hover:bg-slate-800;
+  }
+
+  .card {
+    @apply bg-[#1a1d27] border border-[#2a2d3a] rounded-lg;
+  }
+
+  .input {
+    @apply bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-2 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-orange-500/70 focus:ring-1 focus:ring-orange-500/30 transition-colors w-full;
+  }
+
+  .badge {
+    @apply inline-flex items-center text-xs font-medium px-1.5 py-0.5 rounded;
+  }
+
+  /* BBCode rendered HTML */
+  .bbcode strong {
+    font-weight: 600;
+  }
+
+  .bbcode em {
+    font-style: italic;
+  }
+
+  .bbcode u {
+    text-decoration: underline;
+  }
+
+  .bbcode s {
+    text-decoration: line-through;
+  }
+
+  .bbcode ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0.25rem 0;
+  }
+
+  .bbcode li {
+    margin: 0.1rem 0;
+  }
+}

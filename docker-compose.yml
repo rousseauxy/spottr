@@ -1,0 +1,22 @@
+# Spottr — Docker Compose deployment
+#
+# Quick start:
+#   cp .env.example .env
+#   # edit .env with your NNTP credentials
+#   docker compose up -d
+#
+# The image is published to GitHub Container Registry on every push to main.
+# To build locally instead, replace the image: line with:
+#   build: .
+
+services:
+  spottr:
+    image: ghcr.io/rousseauxy/spottr:latest
+    container_name: spottr
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
