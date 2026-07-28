@@ -28,6 +28,7 @@ import (
 	"compress/flate"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -65,38 +66,54 @@ type NZBList struct {
 	Segments []string `xml:"Segment"`
 }
 
-// ParseFromOverview creates a partial Spot from NNTP OVER data (fast path,
-// no body fetch required). Returns an error if the From header doesn't look like Spotnet.
-func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, error) {
+// ParseFromOverview creates a partial Spot from NNTP OVER data (fast path, no
+// body fetch required). Returns an error if the From header doesn't look like
+// Spotnet.
+//
+// The second return value reports whether the header signature checked out
+// against the well-known Spotnet master key named by the header's keyid. It is
+// deliberately not folded into Spot.Verified: this proves the header was
+// produced by a genuine Spotnet client, whereas Spot.Verified (set later during
+// enrichment) proves which spotter posted it. Legacy spots use keyid 1 and are
+// unverifiable by design, so callers must treat false as "unknown", not "bad".
+func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 	from := ai.From
 
 	// Extract everything inside < > from the From header
 	ltIdx := strings.LastIndex(from, "<")
 	gtIdx := strings.LastIndex(from, ">")
 	if ltIdx < 0 || gtIdx <= ltIdx {
-		return nil, fmt.Errorf("no angle brackets in From: %q", from)
+		return nil, false, fmt.Errorf("no angle brackets in From: %q", from)
 	}
 	addr := from[ltIdx+1 : gtIdx] // e.g. "KEY@1a2b.12345.rand.date.cid.cval.sig"
 
 	atIdx := strings.LastIndex(addr, "@")
 	if atIdx < 0 {
-		return nil, fmt.Errorf("no @ in From address: %q", addr)
+		return nil, false, fmt.Errorf("no @ in From address: %q", addr)
 	}
 
 	headerPart := addr[atIdx+1:] // after @
 	fields := strings.Split(headerPart, ".")
 	if len(fields) < 6 {
-		return nil, fmt.Errorf("too few dot-fields in From address (%d): %q", len(fields), headerPart)
+		return nil, false, fmt.Errorf("too few dot-fields in From address (%d): %q", len(fields), headerPart)
+	}
+
+	// The part before the @ is dot-separated too. On self-signed articles its
+	// first element is the poster's own RSA modulus; on ordinary spots it is
+	// just a signature. Length tells them apart (see minSelfSignedKeyLen).
+	selfSigned := ""
+	if before := addr[:atIdx]; before != "" {
+		selfSigned = UnprepareBase64(strings.Split(before, ".")[0])
 	}
 
 	// fields[0]: [CAT][KEYID][SUBCAT...]
 	// CAT is 1-based in wire format (1=Image, 2=Audio, 3=Game, 4=App), subtract 1
 	if len(fields[0]) < 2 {
-		return nil, fmt.Errorf("short cat/keyid field: %q", fields[0])
+		return nil, false, fmt.Errorf("short cat/keyid field: %q", fields[0])
 	}
 	category := int(fields[0][0]-'0') - 1
 	if category < 0 || category > 3 {
-		return nil, fmt.Errorf("invalid category %d from %q", category+1, fields[0])
+		return nil, false, fmt.Errorf("invalid category %d from %q", category+1, fields[0])
 	}
 	keyID := int(fields[0][1] - '0')
 	isLegacy := keyID == 1
@@ -111,12 +128,17 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, error) {
 	// Parse title and tag from subject
 	title, tag := parseSubject(ai.Subject, isLegacy)
 
+	postedAt, err := resolvePostedAt(fields[3], ai.Date)
+	if err != nil {
+		return nil, false, err
+	}
+
 	spot := &db.Spot{
 		MessageID:  ai.MessageID,
 		ArticleNum: ai.ArticleNum,
 		Title:      title,
 		Poster:     posterName,
-		PostedAt:   ai.Date,
+		PostedAt:   postedAt,
 		Tag:        tag,
 		Category:   category,
 		SubCatA:    subA,
@@ -124,9 +146,69 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, error) {
 		SubCatC:    subC,
 		SubCatD:    subD,
 		Size:       filesize,
+		// Resolved once at parse time into an indexable column. The old
+		// `sub_cat_d NOT LIKE '%z3%'` filter ran on every browse query and
+		// could not use an index.
+		IsAdult: IsAdultSubCat(subD),
 	}
 
-	return spot, nil
+	// fields[len-1] is the header signature; the master key is chosen by keyid.
+	headerVerified := VerifyHeader(title, headerPart, posterName, fields[len(fields)-1], keyID)
+	spot.KeyID = keyID
+	spot.HeaderPart = headerPart
+	spot.HeaderSig = fields[len(fields)-1]
+	spot.SelfSignedKey = selfSigned
+
+	return spot, headerVerified, nil
+}
+
+// spotnetEpoch predates Spotnet itself; anything earlier is a parsing artifact
+// rather than a real post date.
+var spotnetEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// maxClockSkew allows for posters with a slightly fast clock while still
+// rejecting timestamps far in the future, which would otherwise pin a spot to
+// the top of every date-sorted listing forever.
+const maxClockSkew = 48 * time.Hour
+
+// resolvePostedAt determines when a spot was posted.
+//
+// The Spotnet From header carries its own unix timestamp, and it sits inside
+// the portion covered by the header signature — so on signed spots it is
+// tamper-evident, and unlike the free-form Date header it needs no format
+// guessing. It is therefore preferred, with the NNTP Date header as fallback.
+//
+// If neither yields a plausible time we return an error rather than inventing
+// one. Defaulting to "now" is what made historical spots appear as if they had
+// just been posted.
+func resolvePostedAt(stampField string, headerDate time.Time) (time.Time, error) {
+	if unix, err := strconv.ParseInt(strings.TrimSpace(stampField), 10, 64); err == nil && unix > 0 {
+		if t := time.Unix(unix, 0).UTC(); plausibleSpotTime(t) {
+			return t, nil
+		}
+	}
+	if plausibleSpotTime(headerDate) {
+		return headerDate.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("no usable post date (stamp=%q, header=%v)", stampField, headerDate)
+}
+
+func plausibleSpotTime(t time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	return t.After(spotnetEpoch) && t.Before(time.Now().Add(maxClockSkew))
+}
+
+// IsAdultSubCat reports whether a parsed sub-category D string carries the
+// Spotnet 18+ marker (z3).
+func IsAdultSubCat(subD string) bool {
+	for _, part := range strings.Split(subD, "|") {
+		if strings.EqualFold(strings.TrimSpace(part), "z3") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseSubject extracts title and tag from the Spotnet article subject line.
@@ -234,6 +316,33 @@ func sanitizeXML(b []byte) []byte {
 	return b
 }
 
+// EnrichFromHeaders fills a spot from a full NNTP header block.
+//
+// Beyond the spot XML this also resolves the spotter's identity: X-User-Key
+// carries the poster's RSA public key, from which SpotterID is derived and
+// against which X-User-Signature is checked. Both are needed before any
+// blacklist can mean anything — without a verified key, a spotter id is just a
+// string the poster chose.
+func EnrichFromHeaders(spot *db.Spot, headers map[string]string) error {
+	if userKeyHdr := headers["x-user-key"]; userKeyHdr != "" {
+		if key, err := ParseUserKey(userKeyHdr); err == nil {
+			spot.SpotterID = SpotterID(key.Modulus)
+			spot.Verified = VerifyFullSpot(
+				spot.MessageID,
+				key,
+				headers["x-user-signature"],
+				headers["x-xml-signature"],
+			)
+		}
+	}
+
+	rawXML, ok := headers["x-xml"]
+	if !ok || strings.TrimSpace(rawXML) == "" {
+		return fmt.Errorf("no x-xml header")
+	}
+	return EnrichFromXML(spot, rawXML)
+}
+
 // EnrichFromXML parses the raw Spotnet XML (from X-XML headers) into the spot.
 // This is the correct path for modern Spotnet articles where the XML lives in
 // article headers (X-XML:), not the body.
@@ -334,19 +443,45 @@ func DecodeImageBody(body []byte) []byte {
 	return []byte(unspecialZipStr(string(body)))
 }
 
-// DecodeNZBBody decodes a Spotnet NZB article body.
+// DefaultMaxNZBBytes caps the decompressed size of an NZB when no explicit
+// limit is given.
+const DefaultMaxNZBBytes = 64 << 20 // 64 MiB
+
+// ErrNZBTooLarge is returned when an NZB inflates past the configured cap.
+var ErrNZBTooLarge = errors.New("spotnet: decompressed NZB exceeds size limit")
+
+// DecodeNZBBody decodes a Spotnet NZB article body using the default limit.
+func DecodeNZBBody(body []byte) ([]byte, error) {
+	return DecodeNZBBodyLimit(body, DefaultMaxNZBBytes)
+}
+
+// DecodeNZBBodyLimit decodes a Spotnet NZB article body.
 // The encoding scheme (same as Spotweb's unspecialZipStr + gzinflate):
 //  1. Un-escape: =C→\n, =B→\r, =A→\0, =D→=
 //  2. raw deflate-inflate the result
 //
 // If inflate fails and the data looks like XML, it is returned as-is.
-func DecodeNZBBody(body []byte) ([]byte, error) {
+//
+// The inflate is bounded. A Spotnet NZB is a deflate stream fetched from a
+// public newsgroup that anyone may post to, so its expansion ratio is
+// attacker-controlled: an unbounded io.ReadAll here turned a single anonymous
+// GET into an out-of-memory kill (a zip bomb).
+func DecodeNZBBodyLimit(body []byte, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxNZBBytes
+	}
 	compressed := []byte(unspecialZipStr(string(body)))
 
 	// raw deflate (matches PHP gzinflate — no zlib or gzip header)
 	r := flate.NewReader(bytes.NewReader(compressed))
 	defer r.Close()
-	out, err := io.ReadAll(r)
+
+	// Read one byte past the ceiling so hitting it is distinguishable from a
+	// stream that merely ends exactly at the limit.
+	out, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if int64(len(out)) > maxBytes {
+		return nil, ErrNZBTooLarge
+	}
 	if err != nil {
 		// inflate failed — maybe already plain text/NZB
 		if bytes.HasPrefix(bytes.TrimSpace(compressed), []byte("<")) {

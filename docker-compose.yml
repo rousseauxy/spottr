@@ -2,10 +2,10 @@
 #
 # Quick start:
 #   cp .env.example .env
-#   # edit .env with your NNTP credentials
+#   # edit .env with your NNTP credentials and APP_PASSWORD
 #   docker compose up -d
 #
-# The image is published to GitHub Container Registry on every push to main.
+# The image is published to GitHub Container Registry on every version tag.
 # To build locally instead, replace the image: line with:
 #   build: .
 
@@ -17,6 +17,32 @@ services:
     ports:
       - "8080:8080"
     volumes:
+      # An existing volume from an older root-running image needs a one-time
+      # `chown -R 65532:65532 ./data`.
       - ./data:/data
     env_file:
       - .env
+
+    # ── Runtime hardening ────────────────────────────────────────────────────
+    # The image runs as an unprivileged user and needs no capabilities.
+    user: "65532:65532"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      # Required because the root filesystem is read-only.
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    # Bound the blast radius of a malformed/hostile article. Spottr caps
+    # decompression itself (MAX_NZB_BYTES), and this is the backstop.
+    mem_limit: 1g
+    pids_limit: 256
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

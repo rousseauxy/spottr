@@ -31,10 +31,12 @@ export async function getSpot(id) {
 }
 
 /**
+ * Sends a spot to SABnzbd. The server fetches the NZB itself and uploads the
+ * bytes, so no URL is passed — SAB never has to reach back into spottr.
  * @param {number} id
- * @param {{ nzb_url: string, name: string, category: string }} body
+ * @param {{ name?: string, category?: string }} [body]
  */
-export async function sendToSAB(id, body) {
+export async function sendToSAB(id, body = {}) {
   const res = await fetch(`/v1/spots/${id}/send-to-sab`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

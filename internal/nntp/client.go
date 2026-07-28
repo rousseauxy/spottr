@@ -3,6 +3,7 @@ package nntp
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,13 +12,32 @@ import (
 	"time"
 )
 
+// defaultMaxArticleBytes caps a single article read when no explicit limit is
+// set. Articles arrive from Usenet, so their size is attacker-controlled.
+const defaultMaxArticleBytes = 32 << 20 // 32 MiB
+
+// ErrArticleTooLarge is returned when an article exceeds the configured cap.
+var ErrArticleTooLarge = errors.New("nntp: article exceeds size limit")
+
 // Client is a minimal NNTP client supporting the commands needed for Spotnet.
 type Client struct {
-	conn   net.Conn
-	r      *bufio.Reader
-	w      *bufio.Writer
-	tls    bool
-	addr   string
+	conn net.Conn
+	r    *bufio.Reader
+	w    *bufio.Writer
+	tls  bool
+	addr string
+
+	// maxArticleBytes bounds Body/BinaryBody/Head reads.
+	maxArticleBytes int64
+}
+
+// SetMaxArticleBytes sets the per-article read ceiling. Zero restores the
+// default.
+func (c *Client) SetMaxArticleBytes(n int64) {
+	if n <= 0 {
+		n = defaultMaxArticleBytes
+	}
+	c.maxArticleBytes = n
 }
 
 // ArticleInfo is returned by OVER/XOVER for a single article.
@@ -59,11 +79,12 @@ func Dial(host string, port int, useTLS bool, user, pass string) (*Client, error
 	}
 
 	c := &Client{
-		conn: conn,
-		r:    bufio.NewReaderSize(conn, 1<<20), // 1MB read buffer
-		w:    bufio.NewWriter(conn),
-		tls:  useTLS,
-		addr: addr,
+		conn:            conn,
+		r:               bufio.NewReaderSize(conn, 1<<20), // 1MB read buffer
+		w:               bufio.NewWriter(conn),
+		tls:             useTLS,
+		addr:            addr,
+		maxArticleBytes: defaultMaxArticleBytes,
 	}
 
 	// Read greeting
@@ -160,8 +181,16 @@ func (c *Client) Overview(from, to int64) ([]ArticleInfo, error) {
 }
 
 // Body fetches the raw body of an article by Message-ID.
+//
+// The id is normalized and validated here rather than at the call sites, so no
+// caller can smuggle CRLF into the command stream regardless of where the id
+// came from.
 func (c *Client) Body(messageID string) ([]byte, error) {
-	resp, err := c.sendCmd("BODY " + messageID)
+	msgID, err := NormalizeMessageID(messageID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.sendCmd("BODY " + msgID)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +204,11 @@ func (c *Client) Body(messageID string) ([]byte, error) {
 // (e.g. Spotnet's specialZipStr). Lines are concatenated WITHOUT any separator
 // so that the reassembled bytes match exactly what was posted.
 func (c *Client) BinaryBody(messageID string) ([]byte, error) {
-	resp, err := c.sendCmd("BODY " + messageID)
+	msgID, err := NormalizeMessageID(messageID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.sendCmd("BODY " + msgID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,13 +222,23 @@ func (c *Client) BinaryBody(messageID string) ([]byte, error) {
 // Returns a map of lowercase header name → concatenated value(s).
 // Multi-line (folded) and repeated headers (e.g. X-XML) are concatenated.
 func (c *Client) Head(messageID string) (map[string]string, error) {
-	resp, err := c.sendCmd("HEAD " + messageID)
+	msgID, err := NormalizeMessageID(messageID)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.sendCmd("HEAD " + msgID)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkCode(resp, 221); err != nil {
 		return nil, err
 	}
+
+	limit := c.maxArticleBytes
+	if limit <= 0 {
+		limit = defaultMaxArticleBytes
+	}
+	var read int64
 
 	headers := make(map[string]string)
 	var curKey, curVal string
@@ -214,6 +257,13 @@ func (c *Client) Head(messageID string) (map[string]string, error) {
 		line = strings.TrimRight(line, "\r\n")
 		if line == "." {
 			break
+		}
+		// Spotnet carries the whole spot XML in repeated X-XML headers, so the
+		// header block is itself attacker-sized and needs the same ceiling as
+		// a body.
+		read += int64(len(line)) + 1
+		if read > limit {
+			return nil, ErrArticleTooLarge
 		}
 		// Folded header continuation (starts with whitespace)
 		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
@@ -283,6 +333,19 @@ func (c *Client) readResponse(codes ...int) (string, error) {
 }
 
 func (c *Client) readDotBody() ([]byte, error) {
+	return c.readDot(true)
+}
+
+// readDot reads a dot-terminated body, appending a newline per line when
+// keepNewlines is set. The accumulated size is checked against
+// maxArticleBytes on every line: an unbounded append here let a single
+// oversized Usenet article exhaust process memory.
+func (c *Client) readDot(keepNewlines bool) ([]byte, error) {
+	limit := c.maxArticleBytes
+	if limit <= 0 {
+		limit = defaultMaxArticleBytes
+	}
+
 	var buf []byte
 	for {
 		line, err := c.r.ReadString('\n')
@@ -297,7 +360,17 @@ func (c *Client) readDotBody() ([]byte, error) {
 		if strings.HasPrefix(trimmed, "..") {
 			trimmed = trimmed[1:]
 		}
-		buf = append(buf, []byte(trimmed+"\n")...)
+
+		if int64(len(buf))+int64(len(trimmed))+1 > limit {
+			// The connection still holds the remainder of the article, so the
+			// caller must not reuse it.
+			return nil, ErrArticleTooLarge
+		}
+
+		buf = append(buf, trimmed...)
+		if keepNewlines {
+			buf = append(buf, '\n')
+		}
 		if err == io.EOF {
 			break
 		}
@@ -310,26 +383,7 @@ func (c *Client) readDotBody() ([]byte, error) {
 // where the encoder already escaped all special bytes (LF, CR, NUL) and the
 // server may have wrapped lines for transport.
 func (c *Client) readDotBinaryBody() ([]byte, error) {
-	var buf []byte
-	for {
-		line, err := c.r.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return nil, err
-		}
-		trimmed := strings.TrimRight(line, "\r\n")
-		if trimmed == "." {
-			break
-		}
-		// Unstuff leading dot
-		if strings.HasPrefix(trimmed, "..") {
-			trimmed = trimmed[1:]
-		}
-		buf = append(buf, []byte(trimmed)...)
-		if err == io.EOF {
-			break
-		}
-	}
-	return buf, nil
+	return c.readDot(false)
 }
 
 func checkCode(resp string, code int) error {
@@ -340,21 +394,57 @@ func checkCode(resp string, code int) error {
 	return fmt.Errorf("expected %d, got: %s", code, resp)
 }
 
+// nntpDateFormats covers the shapes seen on real Usenet Date headers.
+//
+// Two-digit years matter: plenty of posting clients emit
+// "Thu, 12 May 22 21:11:49 UTC". Without a "06" layout those fail to parse,
+// and the old fallback silently substituted time.Now() — which dated thousands
+// of historical spots to the moment they were indexed.
+var nntpDateFormats = []string{
+	// 4-digit year
+	"Mon, 2 Jan 2006 15:04:05 -0700",
+	"Mon, 2 Jan 2006 15:04:05 MST",
+	"Mon, 2 Jan 2006 15:04 -0700",
+	"Mon, 2 Jan 2006 15:04 MST",
+	"2 Jan 2006 15:04:05 -0700",
+	"2 Jan 2006 15:04:05 MST",
+	"2 Jan 2006 15:04 -0700",
+	"2 Jan 2006 15:04 MST",
+	// 2-digit year
+	"Mon, 2 Jan 06 15:04:05 -0700",
+	"Mon, 2 Jan 06 15:04:05 MST",
+	"Mon, 2 Jan 06 15:04 -0700",
+	"Mon, 2 Jan 06 15:04 MST",
+	"2 Jan 06 15:04:05 -0700",
+	"2 Jan 06 15:04:05 MST",
+	"2 Jan 06 15:04 -0700",
+	"2 Jan 06 15:04 MST",
+	time.RFC1123Z,
+	time.RFC1123,
+	time.RFC822Z,
+	time.RFC822,
+}
+
 // parseNNTPDate tries common NNTP date formats.
+//
+// On failure it returns the zero time and an error — never time.Now(). A
+// caller that ignores the error then gets an obviously-wrong zero value rather
+// than a plausible-looking current timestamp that silently corrupts ordering.
 func parseNNTPDate(s string) (time.Time, error) {
-	formats := []string{
-		"Mon, 2 Jan 2006 15:04:05 -0700",
-		"Mon, 2 Jan 2006 15:04:05 MST",
-		"2 Jan 2006 15:04:05 -0700",
-		"2 Jan 2006 15:04:05 MST",
-		time.RFC1123Z,
-		time.RFC1123,
-	}
 	s = strings.TrimSpace(s)
-	for _, f := range formats {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date")
+	}
+
+	// Some clients append a parenthesised zone name: "+0000 (UTC)".
+	if i := strings.LastIndex(s, " ("); i > 0 && strings.HasSuffix(s, ")") {
+		s = strings.TrimSpace(s[:i])
+	}
+
+	for _, f := range nntpDateFormats {
 		if t, err := time.Parse(f, s); err == nil {
 			return t, nil
 		}
 	}
-	return time.Now(), fmt.Errorf("unrecognised date: %s", s)
+	return time.Time{}, fmt.Errorf("unrecognised date: %s", s)
 }

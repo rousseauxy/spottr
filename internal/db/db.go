@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,69 +14,125 @@ import (
 // DB wraps the sql.DB connection with app-specific helpers.
 type DB struct {
 	*sql.DB
+
+	// writeMu serializes bulk write transactions in-process.
+	//
+	// SQLite permits exactly one writer regardless, so letting the sync
+	// engine, the backfill worker and maintenance sweeps contend for it only
+	// converts guaranteed serialization into lock contention and occasional
+	// SQLITE_BUSY. Taking the turn in Go is cheaper and deterministic. Reads
+	// are unaffected and still run concurrently under WAL.
+	writeMu sync.Mutex
+}
+
+// lockWrites acquires the bulk-write turn. Callers must call the returned
+// release function.
+func (db *DB) lockWrites() func() {
+	db.writeMu.Lock()
+	return db.writeMu.Unlock
 }
 
 // Spot represents a single Spotnet post.
 type Spot struct {
-	ID         int64
-	MessageID  string
-	ArticleNum int64
-	Title      string
+	ID          int64
+	MessageID   string
+	ArticleNum  int64
+	Title       string
 	Description string
-	Poster     string
-	PostedAt   time.Time
-	Tag        string
-	NzbID      string
-	Category   int
-	SubCatA    string
-	SubCatB    string
-	SubCatC    string
-	SubCatD    string
-	Size       int64
-	ImageURL   string
-	Verified   bool
-	Moderated  bool
+	Poster      string
+	PostedAt    time.Time
+	Tag         string
+	NzbID       string
+	Category    int
+	SubCatA     string
+	SubCatB     string
+	SubCatC     string
+	SubCatD     string
+	Size        int64
+	ImageURL    string
+	Verified    bool
+	Moderated   bool
+	IsAdult     bool
+	SpotterID   string
+	// The following are parsed from the From header and are NOT persisted.
+	// They exist only while classifying a freshly retrieved article.
+	KeyID         int    `json:"-"` // Spotnet signing-key id
+	HeaderPart    string `json:"-"` // everything after the @, incl. the signature
+	HeaderSig     string `json:"-"` // trailing signature field
+	SelfSignedKey string `json:"-"` // inline RSA modulus on self-signed articles
 }
 
 // SearchParams holds filtering + pagination for spot queries.
 type SearchParams struct {
-	Query      string   // FTS query
-	Categories []int    // main categories to include (nil = all)
+	Query      string // FTS query (sanitized before it reaches SQLite)
+	Categories []int  // main categories to include (nil = all)
 	Poster     string
 	MinSize    int64
 	MaxSize    int64
 	Since      time.Time
 	Limit      int
 	Offset     int
+	// Before implements keyset pagination: return only spots posted strictly
+	// before this instant. Far cheaper than a large OFFSET.
+	Before     time.Time
 	SortBy     string // "date" (default) | "size" | "relevance"
-	AllowAdult bool   // include subcatz=z3 (18+) spots; default false
+	AllowAdult bool   // include 18+ spots; default false
 }
 
 // Open opens (or creates) the SQLite database and applies the schema.
-func Open(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path)
+//
+// maxConns bounds the connection pool. WAL mode supports many concurrent
+// readers alongside a single writer, so more than one connection is both safe
+// and necessary — with a pool of one, any slow query blocks every other
+// request and the background sync engine.
+func Open(path string, maxConns int) (*DB, error) {
+	if maxConns < 1 {
+		maxConns = 1
+	}
+
+	// The DSN needs the file: scheme for query parameters to be parsed at all —
+	// a bare path is taken as a filename and the pragmas are silently ignored.
+	//
+	// busy_timeout makes a writer wait for the lock instead of failing
+	// immediately with SQLITE_BUSY. _txlock=immediate is the other half: it
+	// makes BeginTx take the write lock up front, so two transactions can never
+	// both start deferred and then deadlock trying to upgrade — an upgrade
+	// failure is *not* covered by busy_timeout and surfaces as a hard
+	// "database is locked". Both matter now that sync, backfill and HTTP
+	// requests share a multi-connection pool.
+	dsn := path
+	if !strings.Contains(dsn, "?") {
+		dsn = "file:" + path +
+			"?_pragma=busy_timeout(15000)" +
+			"&_pragma=journal_mode(WAL)" +
+			"&_pragma=foreign_keys(1)" +
+			"&_pragma=synchronous(1)" +
+			"&_txlock=immediate"
+	}
+
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// SQLite works best with a single writer
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetMaxOpenConns(maxConns)
+	sqlDB.SetMaxIdleConns(maxConns)
+	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	// Apply pragmas after open (most reliable with modernc/sqlite)
-	pragmas := []string{
+	// Applied per-connection by the DSN above; repeated here so a pre-existing
+	// database file also gets WAL turned on.
+	for _, p := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",
 		"PRAGMA temp_store=MEMORY",
-	}
-	for _, p := range pragmas {
+	} {
 		if _, err := sqlDB.Exec(p); err != nil {
 			return nil, fmt.Errorf("pragma %q: %w", p, err)
 		}
 	}
 
-	db := &DB{sqlDB}
+	db := &DB{DB: sqlDB}
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -83,16 +140,13 @@ func Open(path string) (*DB, error) {
 	return db, nil
 }
 
-func (db *DB) migrate() error {
-	_, err := db.Exec(Schema)
-	return err
-}
-
-// InsertSpots bulk-inserts spots, ignoring duplicates (by message_id).
+// InsertSpots bulk-inserts spots, ignoring duplicates (by message_id) and
+// anything already recorded as moderator-removed.
 func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 	if len(spots) == 0 {
 		return 0, nil
 	}
+	defer db.lockWrites()()
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -104,8 +158,9 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 		INSERT OR IGNORE INTO spots
 		    (message_id, article_num, title, description, poster, posted_at,
 		     tag, nzb_id, category, sub_cat_a, sub_cat_b, sub_cat_c, sub_cat_d,
-		     size, image_url, verified, moderated)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		     size, image_url, verified, moderated, is_adult, spotter_id)
+		SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+		WHERE NOT EXISTS (SELECT 1 FROM moderated_ring WHERE message_id = ?)
 	`)
 	if err != nil {
 		return 0, err
@@ -119,6 +174,8 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 			s.PostedAt.Unix(), s.Tag, s.NzbID,
 			s.Category, s.SubCatA, s.SubCatB, s.SubCatC, s.SubCatD,
 			s.Size, s.ImageURL, boolInt(s.Verified), boolInt(s.Moderated),
+			boolInt(s.IsAdult), s.SpotterID,
+			s.MessageID,
 		)
 		if err != nil {
 			return inserted, err
@@ -129,6 +186,11 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 
 	return inserted, tx.Commit()
 }
+
+const spotColumns = `s.id, s.message_id, s.article_num, s.title, s.description,
+	s.poster, s.posted_at, s.tag, s.nzb_id,
+	s.category, s.sub_cat_a, s.sub_cat_b, s.sub_cat_c, s.sub_cat_d,
+	s.size, s.image_url, s.verified, s.moderated, s.is_adult, s.spotter_id`
 
 // SearchSpots performs a full-text or filtered search.
 func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, error) {
@@ -142,13 +204,13 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 	var where []string
 	var args []any
 
-	if p.Query != "" {
+	ftsQuery := SanitizeFTSQuery(p.Query)
+	if ftsQuery != "" {
 		where = append(where, "s.id IN (SELECT rowid FROM spots_fts WHERE spots_fts MATCH ?)")
-		args = append(args, p.Query)
+		args = append(args, ftsQuery)
 	}
 	if len(p.Categories) > 0 {
-		placeholders := strings.Repeat("?,", len(p.Categories))
-		placeholders = placeholders[:len(placeholders)-1]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(p.Categories)), ",")
 		where = append(where, fmt.Sprintf("s.category IN (%s)", placeholders))
 		for _, c := range p.Categories {
 			args = append(args, c)
@@ -170,41 +232,47 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 		where = append(where, "s.posted_at >= ?")
 		args = append(args, p.Since.Unix())
 	}
+	if !p.Before.IsZero() {
+		where = append(where, "s.posted_at < ?")
+		args = append(args, p.Before.Unix())
+	}
 	where = append(where, "s.moderated = 0")
 	if !p.AllowAdult {
-		where = append(where, "s.sub_cat_d NOT LIKE '%z3%'")
+		// Indexed equality against the partial index, replacing the old
+		// `sub_cat_d NOT LIKE '%z3%'` full scan.
+		where = append(where, "s.is_adult = 0")
 	}
 
-	whereClause := ""
-	if len(where) > 0 {
-		whereClause = "WHERE " + strings.Join(where, " AND ")
-	}
+	whereClause := "WHERE " + strings.Join(where, " AND ")
 
 	orderClause := "s.posted_at DESC"
-	if p.SortBy == "size" {
+	switch p.SortBy {
+	case "size":
 		orderClause = "s.size DESC"
+	case "relevance":
+		if ftsQuery == "" {
+			orderClause = "s.posted_at DESC"
+		}
 	}
 
 	countArgs := make([]any, len(args))
 	copy(countArgs, args)
 
 	var total int
-	err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT COUNT(*) FROM spots s %s", whereClause), countArgs...).Scan(&total)
+	err := db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM spots s %s", whereClause), countArgs...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, p.Limit, p.Offset)
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT s.id, s.message_id, s.article_num, s.title, s.description,
-		       s.poster, s.posted_at, s.tag, s.nzb_id,
-		       s.category, s.sub_cat_a, s.sub_cat_b, s.sub_cat_c, s.sub_cat_d,
-		       s.size, s.image_url, s.verified, s.moderated
+		SELECT %s
 		FROM spots s
 		%s
 		ORDER BY %s
 		LIMIT ? OFFSET ?
-	`, whereClause, orderClause), args...)
+	`, spotColumns, whereClause, orderClause), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -212,53 +280,51 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 
 	var spots []Spot
 	for rows.Next() {
-		var s Spot
-		var postedAt int64
-		var verified, moderated int
-		err := rows.Scan(
-			&s.ID, &s.MessageID, &s.ArticleNum, &s.Title, &s.Description,
-			&s.Poster, &postedAt, &s.Tag, &s.NzbID,
-			&s.Category, &s.SubCatA, &s.SubCatB, &s.SubCatC, &s.SubCatD,
-			&s.Size, &s.ImageURL, &verified, &moderated,
-		)
+		s, err := scanSpot(rows)
 		if err != nil {
 			return nil, 0, err
 		}
-		s.PostedAt = time.Unix(postedAt, 0)
-		s.Verified = verified == 1
-		s.Moderated = moderated == 1
-		spots = append(spots, s)
+		spots = append(spots, *s)
 	}
 
 	return spots, total, rows.Err()
 }
 
-// GetSpotByID fetches a single spot by its integer primary key.
-func (db *DB) GetSpotByID(ctx context.Context, id int64) (*Spot, error) {
-	row := db.QueryRowContext(ctx, `
-		SELECT id, message_id, article_num, title, description, poster, posted_at,
-		       tag, nzb_id, category, sub_cat_a, sub_cat_b, sub_cat_c, sub_cat_d,
-		       size, image_url, verified, moderated
-		FROM spots WHERE id = ?`, id)
+type rowScanner interface{ Scan(dest ...any) error }
 
+func scanSpot(sc rowScanner) (*Spot, error) {
 	var s Spot
 	var postedAt int64
-	var verified, moderated int
-	err := row.Scan(
-		&s.ID, &s.MessageID, &s.ArticleNum, &s.Title, &s.Description, &s.Poster, &postedAt,
-		&s.Tag, &s.NzbID, &s.Category, &s.SubCatA, &s.SubCatB, &s.SubCatC, &s.SubCatD,
-		&s.Size, &s.ImageURL, &verified, &moderated,
+	var verified, moderated, isAdult int
+	err := sc.Scan(
+		&s.ID, &s.MessageID, &s.ArticleNum, &s.Title, &s.Description,
+		&s.Poster, &postedAt, &s.Tag, &s.NzbID,
+		&s.Category, &s.SubCatA, &s.SubCatB, &s.SubCatC, &s.SubCatD,
+		&s.Size, &s.ImageURL, &verified, &moderated, &isAdult, &s.SpotterID,
 	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
 	s.PostedAt = time.Unix(postedAt, 0)
 	s.Verified = verified == 1
 	s.Moderated = moderated == 1
+	s.IsAdult = isAdult == 1
 	return &s, nil
+}
+
+// GetSpotByID fetches a single spot by its integer primary key.
+func (db *DB) GetSpotByID(ctx context.Context, id int64) (*Spot, error) {
+	row := db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT %s FROM spots s WHERE s.id = ?`, spotColumns), id)
+
+	s, err := scanSpot(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // GetSyncState returns the last retrieved article number for a newsgroup.
@@ -282,6 +348,30 @@ func (db *DB) SetSyncState(ctx context.Context, group string, lastArticle int64)
 		    last_article_num = excluded.last_article_num,
 		    last_sync_at     = excluded.last_sync_at
 	`, group, lastArticle)
+	return err
+}
+
+// GetBackfillState returns the lowest article number retrieved so far.
+// Zero means backfill has not started.
+func (db *DB) GetBackfillState(ctx context.Context, group string) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx,
+		"SELECT backfill_article_num FROM sync_state WHERE group_name = ?", group,
+	).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return n, err
+}
+
+// SetBackfillState records how far back the historical sweep has reached.
+func (db *DB) SetBackfillState(ctx context.Context, group string, oldestArticle int64) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO sync_state (group_name, backfill_article_num, last_sync_at)
+		VALUES (?, ?, unixepoch())
+		ON CONFLICT(group_name) DO UPDATE SET
+		    backfill_article_num = excluded.backfill_article_num
+	`, group, oldestArticle)
 	return err
 }
 
@@ -326,20 +416,22 @@ func (db *DB) GetCachedImage(ctx context.Context, messageID string) (content []b
 	return content, mimeType, err
 }
 
+// UpdateSpotEnrichment saves the enriched fields back to the database after
+// lazy-fetching the article body.
+func (db *DB) UpdateSpotEnrichment(ctx context.Context, spot *Spot) error {
+	_, err := db.ExecContext(ctx, `
+		UPDATE spots
+		SET description = ?, image_url = ?, nzb_id = ?, size = ?, spotter_id = ?, verified = ?
+		WHERE id = ?`,
+		spot.Description, spot.ImageURL, spot.NzbID, spot.Size,
+		spot.SpotterID, boolInt(spot.Verified), spot.ID,
+	)
+	return err
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1
 	}
 	return 0
-}
-// UpdateSpotEnrichment saves the enriched fields (Description, ImageURL, NzbID, Size)
-// back to the database after lazy-fetching the article body.
-func (db *DB) UpdateSpotEnrichment(ctx context.Context, spot *Spot) error {
-        _, err := db.ExecContext(ctx, `
-                UPDATE spots
-                SET description = ?, image_url = ?, nzb_id = ?, size = ?
-                WHERE id = ?`,
-                spot.Description, spot.ImageURL, spot.NzbID, spot.Size, spot.ID,
-        )
-        return err
 }

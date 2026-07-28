@@ -102,21 +102,13 @@
     return badges.slice(0, 4);
   }
 
-  function nzbUrl(spot) {
-    return `/v1/spots/${spot.ID}/nzb`;
-  }
-
   // SAB send
   let sending = {};
   async function sendToSAB(spot) {
     const { sendToSAB: api } = await import('$lib/api.js');
     sending[spot.ID] = true;
     try {
-      await api(spot.ID, {
-        nzb_url: window.location.origin + nzbUrl(spot),
-        name: spot.Title,
-        category: ''
-      });
+      await api(spot.ID, { name: spot.Title, category: '' });
       // brief visual feedback
       sending[spot.ID] = 'ok';
       setTimeout(() => { delete sending[spot.ID]; sending = { ...sending }; }, 2000);

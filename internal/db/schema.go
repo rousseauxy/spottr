@@ -1,8 +1,9 @@
 package db
 
-// Schema defines all DDL statements for the SQLite database.
-// FTS5 is used for full-text search on spot title/description.
-// WAL mode is enabled at connection time for concurrent read/write.
+// Schema defines the base DDL. Every statement is idempotent (IF NOT EXISTS)
+// so it can be re-applied on every boot. Changes to EXISTING tables belong in
+// migrations (see migrations.go), not here — SQLite has no "ADD COLUMN IF NOT
+// EXISTS", so altering this block would break upgrades of live databases.
 
 const Schema = `
 PRAGMA journal_mode = WAL;
@@ -104,10 +105,40 @@ CREATE TABLE IF NOT EXISTS user_spots (
     PRIMARY KEY (user_id, spot_id)
 );
 
--- Sync state: track highest article number retrieved per group
+-- Sync state: track highest article number retrieved per group.
+-- backfill_article_num is the lowest article we have walked back to; the
+-- backfill worker moves it down towards the group's first article.
 CREATE TABLE IF NOT EXISTS sync_state (
-    group_name       TEXT    PRIMARY KEY,
-    last_article_num INTEGER NOT NULL DEFAULT 0,
-    last_sync_at     INTEGER NOT NULL DEFAULT 0
+    group_name           TEXT    PRIMARY KEY,
+    last_article_num     INTEGER NOT NULL DEFAULT 0,
+    last_sync_at         INTEGER NOT NULL DEFAULT 0,
+    backfill_article_num INTEGER NOT NULL DEFAULT 0
 );
+
+-- Persistent application settings. Owns the newznab API key so it survives
+-- both process restarts and container recreation.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Spotter blacklist/whitelist, populated from external XML feeds.
+CREATE TABLE IF NOT EXISTS spotter_lists (
+    spotter_id TEXT NOT NULL,
+    list_type  TEXT NOT NULL,              -- 'black' | 'white'
+    origin     TEXT NOT NULL DEFAULT '',   -- feed URL it came from
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (spotter_id, list_type)
+);
+
+-- Message-ids removed by a moderator dispose. Kept after the spot is deleted so
+-- a later sync pass does not re-insert it.
+CREATE TABLE IF NOT EXISTS moderated_ring (
+    message_id TEXT PRIMARY KEY,
+    stamp      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_nzbs_fetched_at   ON nzbs(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_images_fetched_at ON images(fetched_at);
 `

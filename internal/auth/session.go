@@ -109,17 +109,19 @@ func (s *Store) RecordSuccess(ip string) {
 }
 
 // SetCookie writes the session cookie onto the response.
-func SetCookie(w http.ResponseWriter, token string, ttl time.Duration) {
+//
+// secure should be true for any deployment reachable over HTTPS; it is a
+// parameter rather than a constant so a plain-HTTP LAN install still works.
+// Set SECURE_COOKIE=true in the environment to enable it.
+func SetCookie(w http.ResponseWriter, token string, ttl time.Duration, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(ttl.Seconds()),
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
-		// Secure is intentionally omitted here so the app works over plain
-		// HTTP on a LAN. Operators behind HTTPS should set Secure via a
-		// reverse proxy or add SPOTTR_SECURE_COOKIE=true to their env.
 	})
 }
 

@@ -1,0 +1,15 @@
+# Keep the build context small and prevent host artifacts from overwriting
+# what the image builds itself. Notably web/node_modules: copying it in clobbers
+# the container's `npm ci` output, and on a share-mounted checkout the binaries
+# arrive without exec permission ("vite: Permission denied").
+.git
+.github
+.env
+.env.*
+!.env.example
+web/node_modules
+web/dist
+data
+*.db
+README.md
+docker-compose.yml

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +26,10 @@ import (
 	"github.com/spottr/spottr/internal/spotnet"
 )
 
+// Version is reported by /_/config and the newznab caps document. Keep it in
+// step with the release tag.
+const Version = "0.2.0"
+
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
 	cfg      *config.Config
@@ -32,36 +37,70 @@ type Handler struct {
 	sab      *sabnzbd.Client
 	webFS    fs.FS
 	sessions *auth.Store
+	pool     *nntp.Pool
+	log      *slog.Logger
+
+	// apiKey is the effective newznab key: the API_KEY override when set,
+	// otherwise the value persisted in the database.
+	apiKey string
+
+	limiter *rateLimiter
+
+	// csp is derived from the built frontend at construction time.
+	csp string
 }
 
 // NewHandler constructs a Handler with all dependencies injected.
-func NewHandler(cfg *config.Config, database *db.DB, sab *sabnzbd.Client, webFS fs.FS) *Handler {
+func NewHandler(cfg *config.Config, database *db.DB, sab *sabnzbd.Client, webFS fs.FS,
+	pool *nntp.Pool, apiKey string, log *slog.Logger) *Handler {
+	policy := buildCSP(webFS)
+	log.Info("content security policy", "script_src", describeCSP(policy))
+
 	return &Handler{
 		cfg:      cfg,
 		db:       database,
 		sab:      sab,
 		webFS:    webFS,
 		sessions: auth.New(cfg.SessionDuration),
+		pool:     pool,
+		log:      log,
+		apiKey:   apiKey,
+		limiter:  newRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		csp:      policy,
 	}
 }
 
 // Router returns the fully configured chi router.
 func (h *Handler) Router() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RealIP)
+	// Our own realIP replaces middleware.RealIP, which trusts forwarding
+	// headers from any peer. See middleware.go.
+	r.Use(realIP(h.cfg.TrustedProxies))
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
+	r.Use(requestLogger(h.log))
 	r.Use(middleware.Compress(5))
-	r.Use(securityHeaders)
+	r.Use(securityHeaders(h.csp))
 
-	// Newznab-compatible API (used by Prowlarr/Sonarr/Radarr)
+	// Liveness/readiness. Unauthenticated and dependency-light so the
+	// container healthcheck does not depend on the newznab API being open.
+	r.Get("/healthz", h.healthz)
+	r.Get("/readyz", h.readyz)
+
+	// Newznab-compatible API (used by Prowlarr/Sonarr/Radarr).
+	// requireAPIKey was previously written but never mounted, leaving the whole
+	// newznab surface open to anonymous callers.
 	r.Route("/api", func(r chi.Router) {
+		r.Use(h.limiter.middleware)
+		r.Use(h.requireAPIKey)
 		r.Get("/", h.newznabHandler)
 		r.Get("/newznab", h.newznabHandler)
 	})
 
 	// Internal JSON API (used by the SvelteKit frontend)
 	r.Route("/v1", func(r chi.Router) {
+		r.Use(h.limiter.middleware)
+
 		// Auth endpoints (public)
 		r.Get("/auth/status", h.authStatus)
 		r.Post("/auth/login", h.authLogin)
@@ -74,12 +113,13 @@ func (h *Handler) Router() http.Handler {
 		r.Get("/spots/{id}/image", h.getImage)
 		r.Get("/categories", h.listCategories)
 
-		// SABnzbd endpoints — require auth when APP_PASSWORD is set
+		// Privileged endpoints — these reach out to SABnzbd or the database on
+		// the caller's behalf.
 		r.Group(func(r chi.Router) {
 			r.Use(h.requireAuth)
 			r.Post("/spots/{id}/send-to-sab", h.sendToSAB)
 			r.Get("/queue", h.sabQueue)
-			r.Get("/sync/trigger", h.triggerSync)
+			r.Get("/metrics", h.metricsHandler)
 		})
 	})
 
@@ -173,7 +213,7 @@ func (h *Handler) newznabHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) newznabCaps(w http.ResponseWriter, r *http.Request) {
 	caps := `<?xml version="1.0" encoding="UTF-8"?>
 <caps>
-  <server version="1.0" title="Spotnet" strapline="Modern Spotnet indexer" url="" email="" image=""/>
+  <server version="` + Version + `" title="Spottr" strapline="Modern Spotnet indexer" url="" email="" image=""/>
   <limits max="100" default="25"/>
   <retention days="3000"/>
   <registration available="no" open="no"/>
@@ -199,14 +239,15 @@ func (h *Handler) newznabCaps(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
+	limit, offset := h.clampPaging(parseIntOr(q.Get("limit"), 25), parseIntOr(q.Get("offset"), 0))
+	if limit > 100 {
+		limit = 100 // newznab advertises max="100" in caps
+	}
 	params := db.SearchParams{
 		Query:      q.Get("q"),
-		Limit:      parseIntOr(q.Get("limit"), 25),
-		Offset:     parseIntOr(q.Get("offset"), 0),
+		Limit:      limit,
+		Offset:     offset,
 		AllowAdult: h.cfg.AllowAdult,
-	}
-	if params.Limit > 100 {
-		params.Limit = 100
 	}
 
 	// Map Newznab category IDs to internal categories
@@ -266,6 +307,27 @@ func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 
 // ─── Internal JSON API ───────────────────────────────────────────────────────
 
+// clampPaging bounds caller-supplied pagination.
+//
+// limit was previously unbounded on this endpoint (only newznab capped it), so
+// ?limit=99999 would materialise 99,999 rows per request; offset was likewise
+// free, making deep pagination an easy way to force large scans.
+func (h *Handler) clampPaging(limit, offset int) (int, int) {
+	if limit < 1 {
+		limit = 25
+	}
+	if limit > h.cfg.MaxPageSize {
+		limit = h.cfg.MaxPageSize
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > h.cfg.MaxOffset {
+		offset = h.cfg.MaxOffset
+	}
+	return limit, offset
+}
+
 func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -275,12 +337,19 @@ func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 		allowAdult = true
 	}
 
+	limit, offset := h.clampPaging(parseIntOr(q.Get("limit"), 25), parseIntOr(q.Get("offset"), 0))
+
 	params := db.SearchParams{
 		Query:      q.Get("q"),
 		Poster:     q.Get("poster"),
-		Limit:      parseIntOr(q.Get("limit"), 25),
-		Offset:     parseIntOr(q.Get("offset"), 0),
+		Limit:      limit,
+		Offset:     offset,
 		AllowAdult: allowAdult,
+	}
+	// Keyset pagination: `before` is a unix timestamp and lets a client page
+	// deeply without paying for a growing OFFSET.
+	if before := parseIntOr(q.Get("before"), 0); before > 0 {
+		params.Before = time.Unix(int64(before), 0)
 	}
 	if catStr := q.Get("cat"); catStr != "" {
 		for _, c := range strings.Split(catStr, ",") {
@@ -295,16 +364,22 @@ func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 
 	spots, total, err := h.db.SearchSpots(r.Context(), params)
 	if err != nil {
+		h.log.Error("search failed", "err", err)
 		jsonError(w, "search failed", http.StatusInternalServerError)
 		return
 	}
 
-	jsonOK(w, map[string]any{
+	resp := map[string]any{
 		"spots":  spots,
 		"total":  total,
 		"limit":  params.Limit,
 		"offset": params.Offset,
-	})
+	}
+	// Cursor for the next page, so clients can avoid OFFSET entirely.
+	if n := len(spots); n > 0 {
+		resp["next_before"] = spots[n-1].PostedAt.Unix()
+	}
+	jsonOK(w, resp)
 }
 
 func (h *Handler) getSpot(w http.ResponseWriter, r *http.Request) {
@@ -333,92 +408,136 @@ func (h *Handler) getSpot(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, spot)
 }
 
+// nzbStatusError carries an HTTP status alongside the failure reason so callers
+// can surface the same distinction downloadNZB used to make inline.
+type nzbStatusError struct {
+	status int
+	msg    string
+}
+
+func (e *nzbStatusError) Error() string { return e.msg }
+
+// resolveNZB loads a spot by id and returns it together with the decoded NZB
+// bytes, enriching from NNTP and populating the cache as needed. Both the
+// browser download and the SABnzbd push go through this, so they can never
+// disagree about what a spot's NZB is.
+func (h *Handler) resolveNZB(ctx context.Context, id int64) (*db.Spot, []byte, error) {
+	spot, err := h.db.GetSpotByID(ctx, id)
+	if err != nil || spot == nil {
+		return nil, nil, &nzbStatusError{http.StatusNotFound, "spot not found"}
+	}
+	if spot.NzbID == "" {
+		if enrichErr := h.enrichSpot(ctx, spot); enrichErr != nil {
+			return nil, nil, &nzbStatusError{http.StatusBadGateway, "could not fetch spot metadata: " + enrichErr.Error()}
+		}
+		_ = h.db.UpdateSpotEnrichment(ctx, spot)
+	}
+	if spot.NzbID == "" {
+		return nil, nil, &nzbStatusError{http.StatusNotFound, "NZB not available for this spot"}
+	}
+	if cached, _ := h.db.GetCachedNZB(ctx, spot.NzbID); len(cached) > 0 {
+		metricNZBCacheHits.Add(1)
+		return spot, cached, nil
+	}
+	metricNZBFetches.Add(1)
+	nzbData, fetchErr := h.fetchNZBSegment(ctx, spot.NzbID)
+	if fetchErr != nil {
+		metricNZBFailures.Add(1)
+		h.log.Warn("nzb fetch failed", "spot_id", id, "err", fetchErr)
+		// Do not echo the upstream error to the caller: it can carry NNTP
+		// server responses and internal host detail.
+		return nil, nil, &nzbStatusError{http.StatusBadGateway, "NZB fetch failed"}
+	}
+	_ = h.db.CacheNZB(ctx, spot.NzbID, nzbData)
+	return spot, nzbData, nil
+}
+
+// writeNZBError maps a resolveNZB failure onto the response.
+func writeNZBError(w http.ResponseWriter, err error, asJSON bool) {
+	status := http.StatusBadGateway
+	msg := err.Error()
+	var se *nzbStatusError
+	if errors.As(err, &se) {
+		status = se.status
+	}
+	if asJSON {
+		jsonError(w, msg, status)
+		return
+	}
+	http.Error(w, msg, status)
+}
+
 func (h *Handler) downloadNZB(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	spot, err := h.db.GetSpotByID(r.Context(), id)
-	if err != nil || spot == nil {
-		http.Error(w, "spot not found", http.StatusNotFound)
+	spot, nzbData, err := h.resolveNZB(r.Context(), id)
+	if err != nil {
+		writeNZBError(w, err, false)
 		return
 	}
-	if spot.NzbID == "" {
-		if enrichErr := h.enrichSpot(r.Context(), spot); enrichErr != nil {
-			http.Error(w, "could not fetch spot metadata: "+enrichErr.Error(), http.StatusBadGateway)
-			return
-		}
-		_ = h.db.UpdateSpotEnrichment(r.Context(), spot)
-	}
-	if spot.NzbID == "" {
-		http.Error(w, "NZB not available for this spot", http.StatusNotFound)
-		return
-	}
-	if cached, _ := h.db.GetCachedNZB(r.Context(), spot.NzbID); len(cached) > 0 {
-		w.Header().Set("Content-Type", "application/x-nzb")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.nzb\"", sanitizeFilename(spot.Title)))
-		w.Write(cached)
-		return
-	}
-	nzbData, fetchErr := h.fetchNZBSegment(r.Context(), spot.NzbID)
-	if fetchErr != nil {
-		http.Error(w, "NZB fetch failed: "+fetchErr.Error(), http.StatusBadGateway)
-		return
-	}
-	_ = h.db.CacheNZB(r.Context(), spot.NzbID, nzbData)
 	w.Header().Set("Content-Type", "application/x-nzb")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.nzb\"", sanitizeFilename(spot.Title)))
 	w.Write(nzbData)
 }
 
-// enrichSpot fetches the spot article body from NNTP and fills Description/ImageURL/NzbID.
-func (h *Handler) enrichSpot(ctx context.Context, spot *db.Spot) error {
-	c, err := nntp.Dial(h.cfg.NNTPHost, h.cfg.NNTPPort, h.cfg.NNTPTLS, h.cfg.NNTPUser, h.cfg.NNTPPass)
+// leaseNNTP borrows a pooled connection with the configured article ceiling
+// applied. Callers must Release it.
+func (h *Handler) leaseNNTP(ctx context.Context) (*nntp.Conn, error) {
+	conn, err := h.pool.Get(ctx)
 	if err != nil {
-		return fmt.Errorf("nntp dial: %w", err)
+		metricNNTPDialFail.Add(1)
+		return nil, fmt.Errorf("nntp: %w", err)
 	}
-	defer c.Close()
+	conn.SetMaxArticleBytes(h.cfg.MaxArticleBytes)
+	return conn, nil
+}
 
-	msgID := spot.MessageID
-	if !strings.HasPrefix(msgID, "<") {
-		msgID = "<" + msgID + ">"
+// enrichSpot fetches the spot article headers from NNTP and fills
+// Description/ImageURL/NzbID, plus the spotter identity and signature status.
+func (h *Handler) enrichSpot(ctx context.Context, spot *db.Spot) error {
+	conn, err := h.leaseNNTP(ctx)
+	if err != nil {
+		return err
 	}
+	defer conn.Release()
 
 	// Spotnet stores the XML in X-XML: headers (HEAD command), not the body.
-	headers, err := c.Head(msgID)
+	headers, err := conn.Head(spot.MessageID)
 	if err != nil {
+		conn.MarkBroken()
 		return fmt.Errorf("nntp head: %w", err)
 	}
-	rawXML, ok := headers["x-xml"]
-	if !ok || strings.TrimSpace(rawXML) == "" {
-		// Fallback: some older spots put the XML in the body
-		body, bodyErr := c.Body(msgID)
-		if bodyErr != nil {
-			return fmt.Errorf("no x-xml header and body fetch failed: %w", bodyErr)
-		}
-		return spotnet.EnrichFromBody(spot, body)
+	if err := spotnet.EnrichFromHeaders(spot, headers); err == nil {
+		return nil
 	}
-	return spotnet.EnrichFromXML(spot, rawXML)
+
+	// Fallback: some older spots put the XML in the body
+	body, bodyErr := conn.Body(spot.MessageID)
+	if bodyErr != nil {
+		conn.MarkBroken()
+		return fmt.Errorf("no x-xml header and body fetch failed: %w", bodyErr)
+	}
+	return spotnet.EnrichFromBody(spot, body)
 }
 
 // fetchNZBSegment fetches and decodes the NZB article from NNTP by message-id.
-// Spotnet NZB articles are encoded with a custom escape scheme then zlib-compressed.
+// Spotnet NZB articles are encoded with a custom escape scheme then deflated.
 func (h *Handler) fetchNZBSegment(ctx context.Context, nzbID string) ([]byte, error) {
-	c, err := nntp.Dial(h.cfg.NNTPHost, h.cfg.NNTPPort, h.cfg.NNTPTLS, h.cfg.NNTPUser, h.cfg.NNTPPass)
+	conn, err := h.leaseNNTP(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("nntp dial: %w", err)
+		return nil, err
 	}
-	defer c.Close()
-	msgID := nzbID
-	if !strings.HasPrefix(msgID, "<") {
-		msgID = "<" + msgID + ">"
-	}
-	body, err := c.BinaryBody(msgID)
+	defer conn.Release()
+
+	body, err := conn.BinaryBody(nzbID)
 	if err != nil {
+		conn.MarkBroken()
 		return nil, fmt.Errorf("nntp nzb body: %w", err)
 	}
-	return spotnet.DecodeNZBBody(body)
+	return spotnet.DecodeNZBBodyLimit(body, h.cfg.MaxNZBBytes)
 }
 
 // getImage serves the spot's image. For NNTP images it fetches the segment(s),
@@ -438,9 +557,13 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 
 	imageURL := spot.ImageURL
 
-	// HTTP/HTTPS image: redirect the browser directly
+	// HTTP/HTTPS image URLs come from Spotnet article XML, which any poster
+	// controls. Redirecting to them turned this endpoint into an open redirect
+	// on our own origin — a phishing primitive that also leaks the visitor to
+	// an arbitrary third party. We do not proxy them either: that would be a
+	// blind SSRF fetcher. Such spots simply have no served image.
 	if strings.HasPrefix(imageURL, "http://") || strings.HasPrefix(imageURL, "https://") {
-		http.Redirect(w, r, imageURL, http.StatusFound)
+		http.NotFound(w, r)
 		return
 	}
 
@@ -477,22 +600,32 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 	w.Write(imgData)
 }
 
+// maxImageSegments bounds how many articles one image may span. The segment
+// list is attacker-supplied, so an unbounded loop is an amplification lever:
+// one request could otherwise trigger hundreds of upstream fetches.
+const maxImageSegments = 16
+
 func (h *Handler) fetchImageSegments(ctx context.Context, segments []string) ([]byte, error) {
-	c, err := nntp.Dial(h.cfg.NNTPHost, h.cfg.NNTPPort, h.cfg.NNTPTLS, h.cfg.NNTPUser, h.cfg.NNTPPass)
-	if err != nil {
-		return nil, fmt.Errorf("nntp dial: %w", err)
+	if len(segments) > maxImageSegments {
+		return nil, fmt.Errorf("image has too many segments (%d)", len(segments))
 	}
-	defer c.Close()
+
+	conn, err := h.leaseNNTP(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Release()
 
 	var all []byte
 	for _, seg := range segments {
-		msgID := seg
-		if !strings.HasPrefix(msgID, "<") {
-			msgID = "<" + msgID + ">"
-		}
-		body, err := c.BinaryBody(msgID)
+		// BinaryBody validates and brackets the id itself.
+		body, err := conn.BinaryBody(seg)
 		if err != nil {
-			return nil, fmt.Errorf("nntp image body %s: %w", seg, err)
+			conn.MarkBroken()
+			return nil, fmt.Errorf("nntp image body: %w", err)
+		}
+		if int64(len(all))+int64(len(body)) > h.cfg.MaxArticleBytes {
+			return nil, nntp.ErrArticleTooLarge
 		}
 		all = append(all, body...)
 	}
@@ -528,17 +661,37 @@ func (h *Handler) sendToSAB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		jsonError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// Name and category are optional overrides; an absent or empty body is fine.
 	var body struct {
-		NzbURL   string `json:"nzb_url"`
 		Name     string `json:"name"`
 		Category string `json:"category"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if decErr := json.NewDecoder(r.Body).Decode(&body); decErr != nil && decErr != io.EOF {
 		jsonError(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	ids, err := h.sab.AddNZBByURL(body.NzbURL, body.Name, body.Category)
+	// Fetch the NZB ourselves and upload the bytes to SABnzbd. Handing SAB a URL
+	// instead would make it fetch spottr over the network, which fails whenever
+	// spottr sits behind an auth proxy — SAB receives the login page, not an NZB.
+	spot, nzbData, err := h.resolveNZB(r.Context(), id)
+	if err != nil {
+		writeNZBError(w, err, true)
+		return
+	}
+
+	name := body.Name
+	if name == "" {
+		name = spot.Title
+	}
+
+	ids, err := h.sab.AddNZBContent(nzbData, sanitizeFilename(name), body.Category)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("SABnzbd error: %s", err), http.StatusBadGateway)
 		return
@@ -564,22 +717,12 @@ func (h *Handler) listCategories(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, spotnet.MainCategories)
 }
 
-func (h *Handler) triggerSync(w http.ResponseWriter, r *http.Request) {
-	// The sync engine is triggered via a channel; set up in main.go
-	jsonOK(w, map[string]string{"status": "triggered"})
-}
-
-func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
-	// Kept for backwards compatibility — replaced by authLogin below.
-	h.authLogin(w, r)
-}
-
 // ─── Auth handlers ────────────────────────────────────────────────────────────
 
 // authStatus returns whether auth is required and whether the current request
 // is authenticated. The SPA calls this on startup.
 func (h *Handler) authStatus(w http.ResponseWriter, r *http.Request) {
-	authRequired := h.cfg.AppPassword != ""
+	authRequired := h.cfg.AuthEnforced()
 	authenticated := !authRequired || h.sessions.Valid(auth.TokenFromRequest(r))
 	jsonOK(w, map[string]bool{
 		"auth_required": authRequired,
@@ -589,13 +732,13 @@ func (h *Handler) authStatus(w http.ResponseWriter, r *http.Request) {
 
 // authLogin validates the password and sets a session cookie.
 func (h *Handler) authLogin(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.AppPassword == "" {
-		// Auth disabled — nothing to log in to.
+	if !h.cfg.AuthEnforced() {
+		// Auth delegated to a proxy, or deliberately disabled.
 		jsonOK(w, map[string]bool{"authenticated": true})
 		return
 	}
 
-	ip := r.RemoteAddr
+	ip := hostOnly(r.RemoteAddr)
 	if h.sessions.Locked(ip) {
 		jsonError(w, "too many attempts, try again later", http.StatusTooManyRequests)
 		return
@@ -611,6 +754,7 @@ func (h *Handler) authLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !auth.CheckPassword(body.Password, h.cfg.AppPassword) {
 		h.sessions.RecordFailure(ip)
+		metricAuthFailures.Add(1)
 		// Deliberate vague message — don't confirm whether the password field was right
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
@@ -618,7 +762,7 @@ func (h *Handler) authLogin(w http.ResponseWriter, r *http.Request) {
 
 	h.sessions.RecordSuccess(ip)
 	token := h.sessions.Create()
-	auth.SetCookie(w, token, h.cfg.SessionDuration)
+	auth.SetCookie(w, token, h.cfg.SessionDuration, h.cfg.SecureCookie)
 	jsonOK(w, map[string]bool{"authenticated": true})
 }
 
@@ -630,11 +774,18 @@ func (h *Handler) authLogout(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]bool{"authenticated": false})
 }
 
-// requireAuth is a middleware that gates access when APP_PASSWORD is set.
-// When auth is disabled it passes all requests through.
+// requireAuth gates the privileged endpoints.
+//
+// This no longer fails open on an empty password. Previously an unset
+// APP_PASSWORD silently disabled the check, so a deployment that simply forgot
+// to configure one exposed SABnzbd control and the download queue to anonymous
+// callers. Running without in-app auth is now an explicit choice made in
+// config (AUTH_MODE=proxy or open), validated at startup.
 func (h *Handler) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.AppPassword == "" {
+		if !h.cfg.AuthEnforced() {
+			// AUTH_MODE=proxy or open: the operator has asserted that
+			// something in front of us is responsible for authentication.
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -642,45 +793,42 @@ func (h *Handler) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		metricAuthFailures.Add(1)
 		jsonError(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 
 // appConfig returns public config values for the SPA.
 func (h *Handler) appConfig(w http.ResponseWriter, r *http.Request) {
-	authRequired := h.cfg.AppPassword != ""
+	authRequired := h.cfg.AuthEnforced()
 	authenticated := !authRequired || h.sessions.Valid(auth.TokenFromRequest(r))
 	jsonOK(w, map[string]interface{}{
 		"allow_adult":   h.cfg.AllowAdult,
 		"auth_required": authRequired,
 		"authenticated": authenticated,
-		"version":       "0.1.0",
+		"version":       Version,
 	})
 }
 
-// authMiddleware is kept for the newznab API key path (Prowlarr compatibility).
-func (h *Handler) authMiddleware(next http.Handler) http.Handler {
+// requireAPIKey gates the newznab API. Accepts ?apikey= (what Prowlarr and
+// friends send) or an X-Api-Key header.
+//
+// The key is compared in constant time, and a missing key is rejected rather
+// than waved through — the previous implementation only compared when a key
+// happened to be configured, and was never mounted on the router at all.
+func (h *Handler) requireAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// API key auth: ?apikey=xxx or X-Api-Key header
-		apiKey := r.URL.Query().Get("apikey")
-		if apiKey == "" {
-			apiKey = r.Header.Get("X-Api-Key")
+		provided := r.URL.Query().Get("apikey")
+		if provided == "" {
+			provided = r.Header.Get("X-Api-Key")
 		}
-		if h.cfg.APIKey != "" && apiKey != h.cfg.APIKey {
-			jsonError(w, "unauthorized", http.StatusUnauthorized)
+		if h.apiKey == "" || !auth.CheckPassword(provided, h.apiKey) {
+			metricAuthFailures.Add(1)
+			// Newznab clients expect an XML error document, not JSON.
+			w.WriteHeader(http.StatusUnauthorized)
+			writeNewznabError(w, 100, "Incorrect user credentials")
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// securityHeaders adds standard defensive HTTP headers to every response.
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0") // Modern browsers use CSP; this header is legacy
 		next.ServeHTTP(w, r)
 	})
 }

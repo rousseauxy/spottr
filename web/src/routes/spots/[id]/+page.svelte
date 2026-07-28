@@ -27,11 +27,7 @@
     sabState = 'sending';
     sabError = '';
     try {
-      await sendToSAB(spot.ID, {
-        nzb_url: window.location.origin + `/v1/spots/${spot.ID}/nzb`,
-        name: spot.Title,
-        category: ''
-      });
+      await sendToSAB(spot.ID, { name: spot.Title, category: '' });
       sabState = 'ok';
     } catch (e) {
       sabState = 'err';
