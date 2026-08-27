@@ -25,7 +25,10 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # Forgejo DOES provide secrets.GITHUB_TOKEN, but it authenticates to
+          # Forgejo - not GitHub - so it cannot log in to ghcr.io. GHCR_TOKEN is a
+          # user-level Actions secret holding a classic PAT with write:packages.
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Extract metadata
         id: meta
