@@ -222,10 +222,10 @@ authentication.
 ## Building from source
 
 ```bash
-# Frontend
+# Frontend (Node 22.12+; the image builds with Node 24)
 cd web && npm ci && npm run build && cd ..
 
-# Backend (requires Go 1.23+)
+# Backend (requires Go 1.27.2+)
 go build -o spottr ./cmd/spottr
 
 # Or use Docker
