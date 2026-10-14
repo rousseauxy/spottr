@@ -1,0 +1,47 @@
+name: Dependencies
+
+# A daily look, through osv.dev, at what is known to be vulnerable in Spottr.
+#
+#   the image  built from this repository as it stands (the one that runs is built the same way),
+#              scanned by osv-scanner: Alpine's packages and the Go standard library in the binary
+#   the source go.mod and web/package-lock.json
+#
+# A finding with a fix available fails the run; GitHub sends a failed scheduled run by mail. On
+# Mondays, or by hand, what has no fix yet is counted as well. tools/ci is shared with sibling
+# projects and kept identical to theirs.
+on:
+  schedule:
+    - cron: '57 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: Spottr
+  OSV_SCANNER_VERSION: v2.7.0
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install osv-scanner
+        run: |
+          base=https://github.com/google/osv-scanner/releases/download/$OSV_SCANNER_VERSION
+          curl -fsSLO "$base/osv-scanner_linux_amd64"
+          curl -fsSLO "$base/osv-scanner_SHA256SUMS"
+          grep ' osv-scanner_linux_amd64$' osv-scanner_SHA256SUMS | sha256sum -c -
+          install -m 755 osv-scanner_linux_amd64 osv-scanner
+      - name: Build the image
+        run: docker build -q -t spottr:scan . > /dev/null
+      - name: Scan and report
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Exit code 1 means "vulnerabilities found", which the report weighs.
+          ./osv-scanner scan image --format json --output-file image.json spottr:scan > /dev/null || [ $? -eq 1 ]
+          ./osv-scanner scan source --format json --output-file source.json -L go.mod -L web/package-lock.json > /dev/null || [ $? -eq 1 ]
+          weekly=""
+          if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "1" ]; then weekly="--weekly"; fi
+          node tools/ci/image-report.mjs --image image=image.json --image source=source.json $weekly
