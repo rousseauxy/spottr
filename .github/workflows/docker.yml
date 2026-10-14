@@ -11,6 +11,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    enable-openid-connect: true
     permissions:
       contents: read
       packages: write
@@ -19,16 +20,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Forgejo DOES provide secrets.GITHUB_TOKEN, but it authenticates to Forgejo - not GitHub -
+      # so it cannot log in to ghcr.io. The registry token is a classic PAT with write:packages,
+      # kept in SecretHive (ci-forge/gh-token) and read with this job's own forge token; see
+      # tools/ci/ghcr-login.sh. The forge secret is passed only as a fallback for the move.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          # Forgejo DOES provide secrets.GITHUB_TOKEN, but it authenticates to
-          # Forgejo - not GitHub - so it cannot log in to ghcr.io. GHCR_TOKEN is a
-          # user-level Actions secret holding a classic PAT with write:packages.
-          password: ${{ secrets.GHCR_TOKEN }}
+        env:
+          GHCR_FALLBACK: ${{ secrets.GHCR_TOKEN }}
+        run: sh tools/ci/ghcr-login.sh
 
       - name: Extract metadata
         id: meta
