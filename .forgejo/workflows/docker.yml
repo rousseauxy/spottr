@@ -6,7 +6,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # The image lives under the GitHub account, not under the forge organisation the repository sits in
+  # (github.repository is apps/spottr here, and ghcr.io has no owner "apps").
+  IMAGE_NAME: rousseauxy/spottr
 
 jobs:
   build-and-push:
