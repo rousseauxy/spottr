@@ -222,7 +222,7 @@ authentication.
 ## Building from source
 
 ```bash
-# Frontend (Node 22.12+; the image builds with Node 24)
+# Frontend (Node 22.17+; the image builds with Node 24)
 cd web && npm ci && npm run build && cd ..
 
 # Backend (requires Go 1.27.2+)
