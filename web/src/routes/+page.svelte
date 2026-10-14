@@ -1,24 +1,24 @@
 <script>
   import { onMount, tick } from 'svelte';
-  import { getSpots } from '$lib/api.js';
-  import { getConfig } from '$lib/config.js';
-  import { formatSize, formatDate, getCat, getFormatEmoji, CATEGORIES, parseSubCat } from '$lib/format.js';
+  import { getSpots } from '#lib/api.js';
+  import { getConfig } from '#lib/config.js';
+  import { formatSize, formatDate, getCat, getFormatEmoji, CATEGORIES, parseSubCat } from '#lib/format.js';
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let spots = [];
-  let total = 0;
-  let loading = true;
-  let error = '';
+  let spots = $state([]);
+  let total = $state(0);
+  let loading = $state(true);
+  let error = $state('');
 
-  let query = '';
-  let selectedCat = null;   // null = all
-  let page = 0;
-  let adult = false;
+  let query = $state('');
+  let selectedCat = $state(null);   // null = all
+  let page = $state(0);
+  let adult = $state(false);
   const PAGE_SIZE = 50;
 
   let debounceTimer;
-  let allowAdult = false;
-  let authenticated = true; // default true; updated after config loads
+  let allowAdult = $state(false);
+  let authenticated = $state(true); // default true; updated after config loads
 
   /** Sync current filter state into the URL without adding a history entry. */
   function syncURL() {
@@ -84,8 +84,8 @@
   function nextPage() { if ((page + 1) * PAGE_SIZE < total) { page++; syncURL(); load(); scrollToTop(); } }
   function scrollToTop() { window.scrollTo({ top: 0, behavior: 'smooth' }); }
 
-  $: totalPages = Math.ceil(total / PAGE_SIZE);
-  $: currentPage = page + 1;
+  let totalPages = $derived(Math.ceil(total / PAGE_SIZE));
+  let currentPage = $derived(page + 1);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function spotBadges(spot) {
@@ -103,9 +103,9 @@
   }
 
   // SAB send
-  let sending = {};
+  let sending = $state({});
   async function sendToSAB(spot) {
-    const { sendToSAB: api } = await import('$lib/api.js');
+    const { sendToSAB: api } = await import('#lib/api.js');
     sending[spot.ID] = true;
     try {
       await api(spot.ID, { name: spot.Title, category: '' });
@@ -136,7 +136,7 @@
       <input
         type="search"
         bind:value={query}
-        on:input={onQueryInput}
+        oninput={onQueryInput}
         placeholder="Search titles, posters, tags…"
         class="input pl-9"
       />
@@ -145,8 +145,8 @@
     {#if allowAdult}
       <label class="flex items-center gap-2 text-sm text-slate-400 cursor-pointer self-center">
         <input type="checkbox" bind:checked={adult}
-               on:change={() => { page = 0; syncURL(); load(); }}
-               class="w-4 h-4 accent-orange-500 rounded" />
+               onchange={() => { page = 0; syncURL(); load(); }}
+               class="w-4 h-4 accent-orange-500 rounded-sm" />
         18+
       </label>
     {/if}
@@ -157,7 +157,7 @@
     {#each CATEGORIES as cat}
       {@const active = selectedCat === cat.id}
       <button
-        on:click={() => selectCat(cat.id)}
+        onclick={() => selectCat(cat.id)}
         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors
                {active ? 'bg-orange-500 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}"
       >
@@ -174,12 +174,12 @@
     <div class="space-y-2">
       {#each Array(8) as _}
         <div class="card p-4 animate-pulse flex gap-3">
-          <div class="w-8 h-8 rounded bg-slate-700/60 shrink-0"></div>
+          <div class="w-8 h-8 rounded-sm bg-slate-700/60 shrink-0"></div>
           <div class="flex-1 space-y-2">
-            <div class="h-4 bg-slate-700/60 rounded w-3/4"></div>
-            <div class="h-3 bg-slate-700/40 rounded w-1/3"></div>
+            <div class="h-4 bg-slate-700/60 rounded-sm w-3/4"></div>
+            <div class="h-3 bg-slate-700/40 rounded-sm w-1/3"></div>
           </div>
-          <div class="w-16 h-4 bg-slate-700/40 rounded self-start"></div>
+          <div class="w-16 h-4 bg-slate-700/40 rounded-sm self-start"></div>
         </div>
       {/each}
     </div>
@@ -227,11 +227,11 @@
             </div>
             {#if authenticated}
             <button
-              on:click|stopPropagation={() => sendToSAB(spot)}
+              onclick={(e) => { e.stopPropagation(); sendToSAB(spot); }}
               disabled={!!sending[spot.ID]}
               title="Send to SABnzbd"
-              class="opacity-0 group-hover:opacity-100 transition-opacity btn-sm !px-2 !py-1
-                     {sending[spot.ID] === 'ok' ? '!bg-green-700' : sending[spot.ID] === 'err' ? '!bg-red-700' : ''}"
+              class="opacity-0 group-hover:opacity-100 transition-opacity btn-sm px-2! py-1!
+                     {sending[spot.ID] === 'ok' ? 'bg-green-700!' : sending[spot.ID] === 'err' ? 'bg-red-700!' : ''}"
             >
               {#if sending[spot.ID] === 'ok'}✓
               {:else if sending[spot.ID] === 'err'}✗
@@ -254,8 +254,8 @@
       <div class="flex items-center justify-between mt-4 text-sm text-slate-500">
         <span>{total.toLocaleString()} spots · page {currentPage} of {totalPages}</span>
         <div class="flex gap-2">
-          <button on:click={prevPage} disabled={page === 0} class="btn-sm">← Prev</button>
-          <button on:click={nextPage} disabled={currentPage >= totalPages} class="btn-sm">Next →</button>
+          <button onclick={prevPage} disabled={page === 0} class="btn-sm">← Prev</button>
+          <button onclick={nextPage} disabled={currentPage >= totalPages} class="btn-sm">Next →</button>
         </div>
       </div>
     {:else}

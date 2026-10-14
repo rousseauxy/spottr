@@ -1,21 +1,21 @@
 <script>
   import { onMount } from 'svelte';
-  import { page } from '$app/stores';
-  import { getSpot, sendToSAB } from '$lib/api.js';
-  import { getConfig } from '$lib/config.js';
-  import { formatSize, formatDate, getCat, getFormatEmoji, parseSubCatSections, renderBBCode } from '$lib/format.js';
+  import { page } from '$app/state';
+  import { getSpot, sendToSAB } from '#lib/api.js';
+  import { getConfig } from '#lib/config.js';
+  import { formatSize, formatDate, getCat, getFormatEmoji, parseSubCatSections, renderBBCode } from '#lib/format.js';
 
-  let spot = null;
-  let loading = true;
-  let error = '';
-  let sabState = '';  // '' | 'sending' | 'ok' | 'err'
-  let sabError = '';
-  let authenticated = true;
+  let spot = $state(null);
+  let loading = $state(true);
+  let error = $state('');
+  let sabState = $state('');  // '' | 'sending' | 'ok' | 'err'
+  let sabError = $state('');
+  let authenticated = $state(true);
 
   onMount(async () => {
     authenticated = getConfig().authenticated ?? true;
     try {
-      spot = await getSpot(Number($page.params.id));
+      spot = await getSpot(Number(page.params.id));
     } catch (e) {
       error = e.message;
     } finally {
@@ -51,9 +51,9 @@
 
   {#if loading}
     <div class="card p-8 animate-pulse space-y-4">
-      <div class="h-6 bg-slate-700/60 rounded w-3/4"></div>
-      <div class="h-4 bg-slate-700/40 rounded w-1/2"></div>
-      <div class="h-32 bg-slate-700/30 rounded"></div>
+      <div class="h-6 bg-slate-700/60 rounded-sm w-3/4"></div>
+      <div class="h-4 bg-slate-700/40 rounded-sm w-1/2"></div>
+      <div class="h-32 bg-slate-700/30 rounded-sm"></div>
     </div>
 
   {:else if error}
@@ -131,7 +131,7 @@
       <div class="px-6 py-4 flex flex-wrap gap-3 items-center">
         {#if authenticated}
         <button
-          on:click={handleSendToSAB}
+          onclick={handleSendToSAB}
           disabled={sabState === 'sending' || sabState === 'ok'}
           class="btn-primary"
         >

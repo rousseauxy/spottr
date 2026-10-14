@@ -1,5 +1,5 @@
 # ── Frontend build stage ─────────────────────────────────────────────────────
-FROM node:22-alpine AS frontend
+FROM node:24-alpine AS frontend
 
 WORKDIR /web
 COPY web/package*.json ./
@@ -8,7 +8,7 @@ COPY web/ .
 RUN npm run build
 
 # ── Backend build stage ──────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
@@ -27,9 +27,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/spottr
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM alpine:3.21
+FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates tzdata wget
+# apk upgrade: the base image can lag behind a fixed package (zlib, OpenSSL).
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates tzdata wget
 
 # Run as an unprivileged user. The process only needs to read its own binary
 # and read/write /data; nothing it does requires root, and running as uid 0

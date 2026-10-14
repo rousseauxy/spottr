@@ -2,20 +2,27 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { writable } from 'svelte/store';
-  import { loadConfig, getConfig, login, logout } from '$lib/config.js';
-  import { getQueue } from '$lib/api.js';
+  import { loadConfig, getConfig, login, logout } from '#lib/config.js';
+  import { getQueue } from '#lib/api.js';
+  /**
+   * @typedef {Object} Props
+   * @property {import('svelte').Snippet} [children]
+   */
+
+  /** @type {Props} */
+  let { children } = $props();
 
   // Exported so child pages can read authenticated state reactively
   export const authStore = writable({ auth_required: false, authenticated: true });
 
-  let queueCount = 0;
-  let cfg = { allow_adult: false, auth_required: false, authenticated: true };
+  let queueCount = $state(0);
+  let cfg = $state({ allow_adult: false, auth_required: false, authenticated: true });
 
   // Login modal state
-  let showLogin = false;
-  let loginPassword = '';
-  let loginError = '';
-  let loginLoading = false;
+  let showLogin = $state(false);
+  let loginPassword = $state('');
+  let loginError = $state('');
+  let loginLoading = $state(false);
 
   onMount(async () => {
     cfg = await loadConfig();
@@ -68,7 +75,7 @@
 
 <div class="min-h-screen flex flex-col">
   <!-- Header -->
-  <header class="sticky top-0 z-40 border-b border-[#2a2d3a] bg-[#0f1117]/95 backdrop-blur supports-[backdrop-filter]:bg-[#0f1117]/80">
+  <header class="sticky top-0 z-40 border-b border-[#2a2d3a] bg-[#0f1117]/95 backdrop-blur-sm supports-backdrop-filter:bg-[#0f1117]/80">
     <div class="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
       <a href="/" class="flex items-center gap-2 shrink-0">
         <span class="text-orange-500 text-xl font-bold tracking-tight">Spottr</span>
@@ -90,12 +97,12 @@
       <!-- Auth button -->
       {#if cfg.auth_required}
         {#if cfg.authenticated}
-          <button on:click={doLogout}
-            class="text-sm text-slate-500 hover:text-slate-300 transition-colors px-2 py-1 rounded">
+          <button onclick={doLogout}
+            class="text-sm text-slate-500 hover:text-slate-300 transition-colors px-2 py-1 rounded-sm">
             Sign out
           </button>
         {:else}
-          <button on:click={() => showLogin = true}
+          <button onclick={() => showLogin = true}
             class="text-sm font-medium bg-orange-500 hover:bg-orange-400 text-white px-3 py-1.5 rounded-lg transition-colors">
             Sign in
           </button>
@@ -106,15 +113,15 @@
 
   <!-- Page content -->
   <main class="flex-1">
-    <slot />
+    {@render children?.()}
   </main>
 </div>
 
 <!-- Login modal -->
 {#if showLogin}
-  <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-       on:click|self={() => { showLogin = false; loginPassword = ''; loginError = ''; }}>
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs"
+       onclick={(e) => { if (e.target === e.currentTarget) { showLogin = false; loginPassword = ''; loginError = ''; } }}>
     <div class="bg-[#1a1d27] border border-[#2a2d3a] rounded-2xl p-8 w-full max-w-sm shadow-2xl">
       <h2 class="text-lg font-semibold text-slate-100 mb-1">Sign in</h2>
       <p class="text-sm text-slate-500 mb-5">Enter your password to continue</p>
@@ -122,7 +129,7 @@
       <input
         type="password"
         bind:value={loginPassword}
-        on:keydown={onLoginKeydown}
+        onkeydown={onLoginKeydown}
         placeholder="Password"
         autofocus
         class="input w-full mb-3"
@@ -133,7 +140,7 @@
       {/if}
 
       <button
-        on:click={doLogin}
+        onclick={doLogin}
         disabled={loginLoading || !loginPassword}
         class="w-full py-2.5 rounded-lg font-medium text-sm transition-colors
                {loginLoading || !loginPassword
