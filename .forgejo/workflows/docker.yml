@@ -53,5 +53,5 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # No build cache: the forge's GitHub-style cache server answers 404, which failed the job after
+          # the image had been pushed (v0.3.1). The build takes about a minute and a half without it.
