@@ -168,16 +168,16 @@ func spaHandler(webFS fs.FS) http.HandlerFunc {
 
 // Newznab API types
 type NewznabResponse struct {
-	XMLName xml.Name        `xml:"rss"`
-	Version string          `xml:"version,attr"`
-	Channel NewznabChannel  `xml:"channel"`
+	XMLName xml.Name       `xml:"rss"`
+	Version string         `xml:"version,attr"`
+	Channel NewznabChannel `xml:"channel"`
 }
 
 type NewznabChannel struct {
-	Title       string       `xml:"title"`
-	Description string       `xml:"description"`
+	Title       string        `xml:"title"`
+	Description string        `xml:"description"`
 	Items       []NewznabItem `xml:"item"`
-	Response    NNResponse   `xml:"http://www.newznab.com/DTD/2010/feeds/attributes/ response"`
+	Response    NNResponse    `xml:"http://www.newznab.com/DTD/2010/feeds/attributes/ response"`
 }
 
 type NNResponse struct {
@@ -187,10 +187,10 @@ type NNResponse struct {
 }
 
 type NewznabItem struct {
-	Title      string    `xml:"title"`
-	GUID       string    `xml:"guid"`
-	PubDate    string    `xml:"pubDate"`
-	Category   string    `xml:"category"`
+	Title      string      `xml:"title"`
+	GUID       string      `xml:"guid"`
+	PubDate    string      `xml:"pubDate"`
+	Category   string      `xml:"category"`
 	Enclosure  NNEnclosure `xml:"enclosure"`
 	Attributes []NNAttr    `xml:"http://www.newznab.com/DTD/2010/feeds/attributes/ attr"`
 }

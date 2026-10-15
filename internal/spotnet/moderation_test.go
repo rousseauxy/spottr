@@ -31,12 +31,12 @@ func TestLooksLikeModerationCommandIgnoresOrdinaryTitles(t *testing.T) {
 	for _, title := range []string{
 		"Deleted Scenes 2025 1080p",
 		"Suske en Wiske -- nr. 000 - 386 (CBR)",
-		"dispose",                  // no target
-		"",                         // empty
-		"removed <a@b>",            // not an exact action word
-		"please delete <a@b>",      // action must come first
-		"delete this file",         // target is not a message-id
-		"remove all the duplicates" ,
+		"dispose",             // no target
+		"",                    // empty
+		"removed <a@b>",       // not an exact action word
+		"please delete <a@b>", // action must come first
+		"delete this file",    // target is not a message-id
+		"remove all the duplicates",
 	} {
 		if cmd, ok := LooksLikeModerationCommand(title); ok {
 			t.Errorf("ordinary title %q misread as command %+v", title, cmd)

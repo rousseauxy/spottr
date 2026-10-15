@@ -99,9 +99,9 @@ func TestRateLimiterBlocksBurstOverrun(t *testing.T) {
 
 func TestHostOnly(t *testing.T) {
 	cases := map[string]string{
-		"1.2.3.4:5678":    "1.2.3.4",
-		"[::1]:8080":      "::1",
-		"1.2.3.4":         "1.2.3.4",
+		"1.2.3.4:5678": "1.2.3.4",
+		"[::1]:8080":   "::1",
+		"1.2.3.4":      "1.2.3.4",
 	}
 	for in, want := range cases {
 		if got := hostOnly(in); got != want {

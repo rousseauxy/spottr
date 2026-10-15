@@ -57,11 +57,11 @@ func TestSpotterIDRejectsGarbage(t *testing.T) {
 
 func TestUnprepareBase64(t *testing.T) {
 	cases := map[string]string{
-		"ab-scd":  "ab/cd===", // -s → /
-		"ab-pcd":  "ab+cd===", // -p → +
-		"abcd":    "abcd",     // already a multiple of 4
-		"abc":     "abc=",
-		"ab":      "ab==",
+		"ab-scd": "ab/cd===", // -s → /
+		"ab-pcd": "ab+cd===", // -p → +
+		"abcd":   "abcd",     // already a multiple of 4
+		"abc":    "abc=",
+		"ab":     "ab==",
 	}
 	for in, want := range cases {
 		if got := UnprepareBase64(in); got != want {
@@ -113,13 +113,13 @@ func TestVerifyFullSpotRequiresKeyAndSignature(t *testing.T) {
 
 func TestIsAdultSubCat(t *testing.T) {
 	cases := map[string]bool{
-		"z3|":      true,
-		"d1|z3|":   true,
-		"Z3|":      true,
-		"d1|d2|":   false,
-		"":         false,
-		"z30|":     false, // must not match as a substring
-		"z1|z2|":   false,
+		"z3|":    true,
+		"d1|z3|": true,
+		"Z3|":    true,
+		"d1|d2|": false,
+		"":       false,
+		"z30|":   false, // must not match as a substring
+		"z1|z2|": false,
 	}
 	for in, want := range cases {
 		if got := IsAdultSubCat(in); got != want {

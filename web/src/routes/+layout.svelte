@@ -132,7 +132,7 @@
         bind:value={loginPassword}
         onkeydown={onLoginKeydown}
         placeholder="Password"
-        autofocus
+        {@attach (node) => node.focus()}
         class="input w-full mb-3"
       />
 

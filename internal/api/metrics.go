@@ -46,7 +46,7 @@ var (
 	metricNZBCacheHits atomic.Int64
 	metricNZBFailures  atomic.Int64
 	metricNNTPDialFail atomic.Int64
-	metricAuthFailures  atomic.Int64
+	metricAuthFailures atomic.Int64
 
 	processStart = time.Now()
 )

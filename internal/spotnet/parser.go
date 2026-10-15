@@ -47,12 +47,12 @@ type SpotXML struct {
 }
 
 type Posting struct {
-	Title       string   `xml:"Title"`
-	Description string   `xml:"Description"`
+	Title       string    `xml:"Title"`
+	Description string    `xml:"Description"`
 	Image       SpotImage `xml:"Image"`
-	Size        string   `xml:"Size"`
-	Tag         string   `xml:"Tag"`
-	NZB         NZBList  `xml:"NZB"`
+	Size        string    `xml:"Size"`
+	Tag         string    `xml:"Tag"`
+	NZB         NZBList   `xml:"NZB"`
 }
 
 type SpotImage struct {

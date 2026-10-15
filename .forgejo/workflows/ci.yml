@@ -1,0 +1,45 @@
+name: CI
+
+# Every push to main and every pull request: the Go code is formatted, vetted and tested, and the
+# web app builds. The image is only built on a v* tag (docker.yml), so without this a regression
+# showed up first after tagging a release.
+#
+# ubuntu-latest is the forge's light runner, not the NAS runner the .NET image builds queue on.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # internal/webstatic embeds web/dist (all:dist), which only the web build or the Dockerfile
+      # makes; a placeholder lets the packages compile.
+      - name: Placeholder for the embedded web build
+        run: mkdir -p internal/webstatic/dist && touch internal/webstatic/dist/index.html
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then echo "::error::not gofmt-formatted:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build

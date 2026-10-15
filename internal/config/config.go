@@ -102,15 +102,15 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		ListenAddr:   envOr("LISTEN_ADDR", ":8080"),
-		DBPath:       envOr("DB_PATH", "/data/spottr.db"),
-		NNTPHost:     envOr("NNTP_HOST", ""),
-		NNTPPort:     envInt("NNTP_PORT", 119),
-		NNTPUser:     envOr("NNTP_USER", ""),
-		NNTPPass:     envOr("NNTP_PASS", ""),
-		NNTPTLS:      envBool("NNTP_TLS", false),
-		NNTPMaxConns: envInt("NNTP_MAX_CONNS", 4),
-		SyncInterval: envDuration("SYNC_INTERVAL", 15*time.Minute),
+		ListenAddr:      envOr("LISTEN_ADDR", ":8080"),
+		DBPath:          envOr("DB_PATH", "/data/spottr.db"),
+		NNTPHost:        envOr("NNTP_HOST", ""),
+		NNTPPort:        envInt("NNTP_PORT", 119),
+		NNTPUser:        envOr("NNTP_USER", ""),
+		NNTPPass:        envOr("NNTP_PASS", ""),
+		NNTPTLS:         envBool("NNTP_TLS", false),
+		NNTPMaxConns:    envInt("NNTP_MAX_CONNS", 4),
+		SyncInterval:    envDuration("SYNC_INTERVAL", 15*time.Minute),
 		SyncLookback:    envInt("SYNC_LOOKBACK", 500000),
 		BackfillEnabled: envBool("BACKFILL", false),
 
@@ -129,8 +129,8 @@ func Load() (*Config, error) {
 
 		MaxPageSize:     envInt("MAX_PAGE_SIZE", 200),
 		MaxOffset:       envInt("MAX_OFFSET", 100000),
-		MaxArticleBytes: envInt64("MAX_ARTICLE_BYTES", 32<<20),  // 32 MiB
-		MaxNZBBytes:     envInt64("MAX_NZB_BYTES", 64<<20),      // 64 MiB decompressed
+		MaxArticleBytes: envInt64("MAX_ARTICLE_BYTES", 32<<20), // 32 MiB
+		MaxNZBBytes:     envInt64("MAX_NZB_BYTES", 64<<20),     // 64 MiB decompressed
 		RateLimitRPS:    envFloat("RATE_LIMIT_RPS", 5),
 		RateLimitBurst:  envInt("RATE_LIMIT_BURST", 30),
 

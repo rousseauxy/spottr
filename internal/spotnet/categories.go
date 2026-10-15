@@ -18,16 +18,16 @@ type Category struct {
 }
 
 type SubCategory struct {
-	Slot  string // "a", "b", "c", "d"
-	Bit   int
-	Name  string
+	Slot string // "a", "b", "c", "d"
+	Bit  int
+	Name string
 }
 
 var MainCategories = []Category{
 	{ID: CatImage, Name: "Image"},
 	{ID: CatAudio, Name: "Audio"},
-	{ID: CatGame,  Name: "Game"},
-	{ID: CatApp,   Name: "Application"},
+	{ID: CatGame, Name: "Game"},
+	{ID: CatApp, Name: "Application"},
 }
 
 // SubCategoryNames provides human-readable names for display/filtering.

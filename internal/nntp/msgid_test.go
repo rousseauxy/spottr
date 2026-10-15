@@ -10,13 +10,13 @@ func TestNormalizeMessageIDRejectsInjection(t *testing.T) {
 		"abc\r\nQUIT",
 		"abc\nPOST",
 		"abc\rDATA",
-		"abc def",            // bare space splits the command
-		"abc<nested>@spot",   // bracket confusion
-		"",                   // empty
-		"   ",                // whitespace only
-		"abc\x00def",         // NUL
-		"abc\tdef",           // tab
-		"héllo@spot.net",     // non-ASCII
+		"abc def",          // bare space splits the command
+		"abc<nested>@spot", // bracket confusion
+		"",                 // empty
+		"   ",              // whitespace only
+		"abc\x00def",       // NUL
+		"abc\tdef",         // tab
+		"héllo@spot.net",   // non-ASCII
 	}
 	for _, in := range hostile {
 		if got, err := NormalizeMessageID(in); err == nil {
