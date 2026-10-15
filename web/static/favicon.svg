@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Spottr, set B (dark): the generated concept, measured and redrawn as geometry. -->
+  <rect x="0.25" y="0.25" width="63.5" height="63.5" rx="13" fill="#12161d"/>
+  <path d="M52.27 15.23A22.95 21.23 0 0 0 11.24 28.3L21.37 33.74A14.52 11.58 0 0 1 45.62 21.17Z" fill="#fb6e18"/>
+  <path d="M11.73 48.77A22.95 21.23 0 0 0 52.76 35.7L42.63 30.26A14.52 11.58 0 0 1 18.38 42.83Z" fill="#b84a13"/>
+  <circle cx="32" cy="32" r="5.55" fill="#fb6e18"/>
+</svg>
