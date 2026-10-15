@@ -78,6 +78,7 @@
   <header class="sticky top-0 z-40 border-b border-[#2a2d3a] bg-[#0f1117]/95 backdrop-blur-sm supports-backdrop-filter:bg-[#0f1117]/80">
     <div class="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
       <a href="/" class="flex items-center gap-2 shrink-0">
+        <img src="/favicon.svg?v=2" alt="" class="w-7 h-7" />
         <span class="text-orange-500 text-xl font-bold tracking-tight">Spottr</span>
       </a>
 

@@ -62,7 +62,8 @@ type GroupInfo struct {
 
 // Dial opens a (optionally TLS) connection and authenticates.
 func Dial(host string, port int, useTLS bool, user, pass string) (*Client, error) {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	// JoinHostPort brackets an IPv6 address; "%s:%d" did not.
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	var conn net.Conn
 	var err error
 

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -128,29 +129,39 @@ func (h *Handler) Router() http.Handler {
 
 	// Static SPA (SvelteKit build)
 	if h.webFS != nil {
-		fileServer := http.FileServer(http.FS(h.webFS))
-		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-			// Serve real file if it exists, else fall back to index.html (SPA routing)
-			f, err := h.webFS.Open(strings.TrimPrefix(r.URL.Path, "/"))
-			if err == nil {
-				f.Close()
-				fileServer.ServeHTTP(w, r)
-				return
-			}
-			// SPA fallback
-			index, err := h.webFS.Open("index.html")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			defer index.Close()
-			http.ServeContent(w, r, "index.html", time.Time{}, index.(interface {
-				io.ReadSeeker
-			}))
-		})
+		r.Get("/*", spaHandler(h.webFS))
 	}
 
 	return r
+}
+
+// spaHandler serves the SvelteKit build: a file that exists is served as it is, and any other path
+// without a file extension gets index.html, so the client-side router can handle it. A missing path
+// WITH an extension (/favicon.svg, /x.js) is a 404: answering it with index.html and a 200 let
+// Cloudflare cache the app page under an image's URL for four hours, since it caches by extension.
+func spaHandler(webFS fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(webFS))
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if f, err := webFS.Open(name); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		if path.Ext(name) != "" {
+			http.NotFound(w, r)
+			return
+		}
+		index, err := webFS.Open("index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer index.Close()
+		http.ServeContent(w, r, "index.html", time.Time{}, index.(interface {
+			io.ReadSeeker
+		}))
+	}
 }
 
 // ─── Newznab API ─────────────────────────────────────────────────────────────
