@@ -55,3 +55,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # No build cache: the forge's GitHub-style cache server answers 404, which failed the job after
           # the image had been pushed (v0.3.1). The build takes about a minute and a half without it.
+
+      # Starts Renovate, so the compose repositories pick up this image at once instead of at its next scheduled
+      # run (tools/ci/start-renovate.sh; never fails the job).
+      - name: Start Renovate
+        if: github.event_name != 'pull_request'
+        run: sh tools/ci/start-renovate.sh
