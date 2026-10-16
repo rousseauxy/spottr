@@ -24,7 +24,7 @@ jobs:
 
       # Forgejo DOES provide secrets.GITHUB_TOKEN, but it authenticates to Forgejo - not GitHub -
       # so it cannot log in to ghcr.io. The registry token is a classic PAT with write:packages,
-      # kept in SecretHive (ci-forge/gh-token) and read with this job's own forge token; see
+      # kept in SecretHive (ci-forge/ghcr-push-token) and read with this job's own forge token; see
       # tools/ci/ghcr-login.sh. The forge secret is passed only as a fallback for the move.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'

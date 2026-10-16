@@ -11,7 +11,7 @@
 # secret is deleted: then a SecretHive that answers nothing fails the login, and says why.
 set -eu
 SECRETHIVE=${SECRETHIVE:-https://secrethive.xact.cloud}
-REGISTRY_SECRET=${REGISTRY_SECRET:-ci-forge/gh-token}
+REGISTRY_SECRET=${REGISTRY_SECRET:-ci-forge/ghcr-push-token}
 REGISTRY=${REGISTRY:-ghcr.io}
 
 value() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).value||"")}catch{}})'; }
