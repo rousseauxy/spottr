@@ -120,6 +120,7 @@ func (h *Handler) Router() http.Handler {
 			r.Use(h.requireAuth)
 			r.Post("/spots/{id}/send-to-sab", h.sendToSAB)
 			r.Get("/queue", h.sabQueue)
+			r.Get("/sab/categories", h.sabCategories)
 			r.Get("/metrics", h.metricsHandler)
 		})
 	})
@@ -416,7 +417,12 @@ func (h *Handler) getSpot(w http.ResponseWriter, r *http.Request) {
 			_ = h.db.UpdateSpotEnrichment(r.Context(), spot)
 		}
 	}
-	jsonOK(w, spot)
+	// PasswordHint: a password the poster wrote in the description, as a suggestion for the
+	// send-to-SABnzbd dialog; "" when the description gives none.
+	jsonOK(w, struct {
+		*db.Spot
+		PasswordHint string
+	}{spot, spotnet.PasswordHint(spot.Description)})
 }
 
 // nzbStatusError carries an HTTP status alongside the failure reason so callers
@@ -678,10 +684,11 @@ func (h *Handler) sendToSAB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Name and category are optional overrides; an absent or empty body is fine.
+	// Name, category and password are optional; an absent or empty body is fine.
 	var body struct {
 		Name     string `json:"name"`
 		Category string `json:"category"`
+		Password string `json:"password"`
 	}
 	if decErr := json.NewDecoder(r.Body).Decode(&body); decErr != nil && decErr != io.EOF {
 		jsonError(w, "bad request", http.StatusBadRequest)
@@ -702,12 +709,25 @@ func (h *Handler) sendToSAB(w http.ResponseWriter, r *http.Request) {
 		name = spot.Title
 	}
 
-	ids, err := h.sab.AddNZBContent(nzbData, sanitizeFilename(name), body.Category)
+	ids, err := h.sab.AddNZBContent(nzbData, sanitizeFilename(name), body.Category, strings.TrimSpace(body.Password))
 	if err != nil {
 		jsonError(w, fmt.Sprintf("SABnzbd error: %s", err), http.StatusBadGateway)
 		return
 	}
 	jsonOK(w, map[string]any{"nzo_ids": ids})
+}
+
+func (h *Handler) sabCategories(w http.ResponseWriter, r *http.Request) {
+	if h.sab == nil {
+		jsonError(w, "SABnzbd not configured", http.StatusServiceUnavailable)
+		return
+	}
+	cats, err := h.sab.Categories()
+	if err != nil {
+		jsonError(w, fmt.Sprintf("SABnzbd error: %s", err), http.StatusBadGateway)
+		return
+	}
+	jsonOK(w, map[string]any{"categories": cats})
 }
 
 func (h *Handler) sabQueue(w http.ResponseWriter, r *http.Request) {

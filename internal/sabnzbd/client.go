@@ -105,13 +105,18 @@ func (c *Client) AddNZBByURL(nzbURL, name, category string) ([]string, error) {
 	return result.NzoIDs, nil
 }
 
-// AddNZBContent sends raw NZB content directly to SABnzbd.
-func (c *Client) AddNZBContent(nzbContent []byte, name, category string) ([]string, error) {
+// AddNZBContent sends raw NZB content directly to SABnzbd. category and password are optional;
+// the password is what SABnzbd uses to unpack an encrypted archive (measured on 5.1.3: it shows on
+// the queue item).
+func (c *Client) AddNZBContent(nzbContent []byte, name, category, password string) ([]string, error) {
 	params := c.baseParams()
 	params.Set("mode", "addfile")
 	params.Set("nzbname", name)
 	if category != "" {
 		params.Set("cat", category)
+	}
+	if password != "" {
+		params.Set("password", password)
 	}
 
 	// Use multipart form upload
@@ -135,6 +140,25 @@ func (c *Client) AddNZBContent(nzbContent []byte, name, category string) ([]stri
 		return nil, fmt.Errorf("sabnzbd addfile failed")
 	}
 	return result.NzoIDs, nil
+}
+
+// Categories returns the categories configured in SABnzbd, in its own order; "*" is its default.
+func (c *Client) Categories() ([]string, error) {
+	params := c.baseParams()
+	params.Set("mode", "get_cats")
+	resp, err := c.get(params)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Categories []string `json:"categories"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode get_cats response: %w", err)
+	}
+	return result.Categories, nil
 }
 
 // GetQueue returns the current download queue.

@@ -34,7 +34,7 @@ export async function getSpot(id) {
  * Sends a spot to SABnzbd. The server fetches the NZB itself and uploads the
  * bytes, so no URL is passed — SAB never has to reach back into spottr.
  * @param {number} id
- * @param {{ name?: string, category?: string }} [body]
+ * @param {{ name?: string, category?: string, password?: string }} [body]
  */
 export async function sendToSAB(id, body = {}) {
   const res = await fetch(`/v1/spots/${id}/send-to-sab`, {
@@ -47,6 +47,16 @@ export async function sendToSAB(id, body = {}) {
     throw new Error(err.error ?? `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+/** The categories configured in SABnzbd ("*" is its default). */
+export async function getSabCategories() {
+  const res = await fetch('/v1/sab/categories');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+  return (await res.json()).categories ?? [];
 }
 
 export async function getQueue() {

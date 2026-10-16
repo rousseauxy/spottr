@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getSpots } from '#lib/api.js';
   import { getConfig } from '#lib/config.js';
   import { formatSize, formatDate, getCat, getFormatEmoji, CATEGORIES, parseSubCat } from '#lib/format.js';
@@ -102,20 +103,15 @@
     return badges.slice(0, 4);
   }
 
-  // SAB send
+  // SAB send: the dialog asks for category and password; the row shows the result briefly.
   let sending = $state({});
-  async function sendToSAB(spot) {
-    const { sendToSAB: api } = await import('#lib/api.js');
-    sending[spot.ID] = true;
-    try {
-      await api(spot.ID, { name: spot.Title, category: '' });
-      // brief visual feedback
-      sending[spot.ID] = 'ok';
-      setTimeout(() => { delete sending[spot.ID]; sending = { ...sending }; }, 2000);
-    } catch (e) {
-      sending[spot.ID] = 'err';
-      setTimeout(() => { delete sending[spot.ID]; sending = { ...sending }; }, 3000);
-    }
+  let dialogSpot = $state(null);
+  function sendToSAB(spot) {
+    dialogSpot = spot;
+  }
+  function sent(spot) {
+    sending[spot.ID] = 'ok';
+    setTimeout(() => { delete sending[spot.ID]; sending = { ...sending }; }, 2000);
   }
 </script>
 
@@ -263,3 +259,8 @@
     {/if}
   {/if}
 </div>
+
+{#if dialogSpot}
+  {@const spot = dialogSpot}
+  <SendToSabDialog {spot} onclose={() => (dialogSpot = null)} onsent={() => sent(spot)} />
+{/if}

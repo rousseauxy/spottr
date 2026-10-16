@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { getSpot, sendToSAB } from '#lib/api.js';
+  import { getSpot } from '#lib/api.js';
+  import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getConfig } from '#lib/config.js';
   import { formatSize, formatDate, getCat, getFormatEmoji, parseSubCatSections, renderBBCode } from '#lib/format.js';
 
@@ -23,16 +24,10 @@
     }
   });
 
-  async function handleSendToSAB() {
-    sabState = 'sending';
-    sabError = '';
-    try {
-      await sendToSAB(spot.ID, { name: spot.Title, category: '' });
-      sabState = 'ok';
-    } catch (e) {
-      sabState = 'err';
-      sabError = e.message;
-    }
+  // The dialog sends; this page only shows that it was sent.
+  let sabDialog = $state(false);
+  function handleSendToSAB() {
+    sabDialog = true;
   }
 </script>
 
@@ -169,3 +164,7 @@
     <p class="mt-3 text-xs text-slate-700 font-mono truncate">{spot.MessageID}</p>
   {/if}
 </div>
+
+{#if sabDialog && spot}
+  <SendToSabDialog {spot} onclose={() => (sabDialog = false)} onsent={() => (sabState = 'ok')} />
+{/if}
