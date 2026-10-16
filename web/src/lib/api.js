@@ -7,12 +7,13 @@ function qs(params) {
 }
 
 /**
- * @param {{ q?: string, cat?: number|null, limit?: number, offset?: number, adult?: boolean, sort?: string }} params
+ * @param {{ q?: string, cat?: number|null, kind?: string, limit?: number, offset?: number, adult?: boolean, sort?: string }} params
  */
 export async function getSpots(params = {}) {
   const p = {};
   if (params.q) p.q = params.q;
   if (params.cat != null) p.cat = params.cat;
+  if (params.kind) p.kind = params.kind;
   if (params.limit) p.limit = params.limit;
   if (params.offset) p.offset = params.offset;
   if (params.adult) p.adult = '1';

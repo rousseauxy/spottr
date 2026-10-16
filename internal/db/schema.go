@@ -61,12 +61,7 @@ CREATE TRIGGER IF NOT EXISTS spots_ad AFTER DELETE ON spots BEGIN
     VALUES ('delete', old.id, old.title, old.description, old.poster, old.tag);
 END;
 
-CREATE TRIGGER IF NOT EXISTS spots_au AFTER UPDATE ON spots BEGIN
-    INSERT INTO spots_fts(spots_fts, rowid, title, description, poster, tag)
-    VALUES ('delete', old.id, old.title, old.description, old.poster, old.tag);
-    INSERT INTO spots_fts(rowid, title, description, poster, tag)
-    VALUES (new.id, new.title, new.description, new.poster, new.tag);
-END;
+-- spots_au: see spotsUpdateTrigger (Go), shared with migration 5.
 
 -- NZB cache: store raw NZB XML fetched from Usenet
 CREATE TABLE IF NOT EXISTS nzbs (
@@ -142,3 +137,14 @@ CREATE TABLE IF NOT EXISTS moderated_ring (
 CREATE INDEX IF NOT EXISTS idx_nzbs_fetched_at   ON nzbs(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_images_fetched_at ON images(fetched_at);
 `
+
+// spotsUpdateTrigger keeps the search index in step when an indexed column changes. Created by
+// migration 5 (for new and existing databases alike); before that it fired on every update of a
+// row, so filling any new column rewrote the whole full-text index.
+const spotsUpdateTrigger = `CREATE TRIGGER IF NOT EXISTS spots_au
+AFTER UPDATE OF title, description, poster, tag ON spots BEGIN
+    INSERT INTO spots_fts(spots_fts, rowid, title, description, poster, tag)
+    VALUES ('delete', old.id, old.title, old.description, old.poster, old.tag);
+    INSERT INTO spots_fts(rowid, title, description, poster, tag)
+    VALUES (new.id, new.title, new.description, new.poster, new.tag);
+END`

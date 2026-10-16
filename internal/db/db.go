@@ -54,6 +54,7 @@ type Spot struct {
 	Moderated   bool
 	IsAdult     bool
 	SpotterID   string
+	Kind        int // KindMovie, KindSeries, ... for Image spots; KindNone otherwise
 	// The following are parsed from the From header and are NOT persisted.
 	// They exist only while classifying a freshly retrieved article.
 	KeyID         int    `json:"-"` // Spotnet signing-key id
@@ -77,6 +78,7 @@ type SearchParams struct {
 	Before     time.Time
 	SortBy     string // "date" (default) | "size" | "relevance"
 	AllowAdult bool   // include 18+ spots; default false
+	Kinds      []int  // KindMovie, KindComic, ... to include (nil = all)
 }
 
 // Open opens (or creates) the SQLite database and applies the schema.
@@ -158,8 +160,8 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 		INSERT OR IGNORE INTO spots
 		    (message_id, article_num, title, description, poster, posted_at,
 		     tag, nzb_id, category, sub_cat_a, sub_cat_b, sub_cat_c, sub_cat_d,
-		     size, image_url, verified, moderated, is_adult, spotter_id)
-		SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+		     size, image_url, verified, moderated, is_adult, spotter_id, kind)
+		SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
 		WHERE NOT EXISTS (SELECT 1 FROM moderated_ring WHERE message_id = ?)
 	`)
 	if err != nil {
@@ -174,7 +176,7 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 			s.PostedAt.Unix(), s.Tag, s.NzbID,
 			s.Category, s.SubCatA, s.SubCatB, s.SubCatC, s.SubCatD,
 			s.Size, s.ImageURL, boolInt(s.Verified), boolInt(s.Moderated),
-			boolInt(s.IsAdult), s.SpotterID,
+			boolInt(s.IsAdult), s.SpotterID, KindOf(s.Category, s.SubCatD),
 			s.MessageID,
 		)
 		if err != nil {
@@ -190,7 +192,7 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 const spotColumns = `s.id, s.message_id, s.article_num, s.title, s.description,
 	s.poster, s.posted_at, s.tag, s.nzb_id,
 	s.category, s.sub_cat_a, s.sub_cat_b, s.sub_cat_c, s.sub_cat_d,
-	s.size, s.image_url, s.verified, s.moderated, s.is_adult, s.spotter_id`
+	s.size, s.image_url, s.verified, s.moderated, s.is_adult, s.spotter_id, s.kind`
 
 // SearchSpots performs a full-text or filtered search.
 func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, error) {
@@ -210,10 +212,15 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 		args = append(args, ftsQuery)
 	}
 	if len(p.Categories) > 0 {
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(p.Categories)), ",")
-		where = append(where, fmt.Sprintf("s.category IN (%s)", placeholders))
+		where = append(where, inOrEqual("s.category", len(p.Categories)))
 		for _, c := range p.Categories {
 			args = append(args, c)
+		}
+	}
+	if len(p.Kinds) > 0 {
+		where = append(where, inOrEqual("s.kind", len(p.Kinds)))
+		for _, k := range p.Kinds {
+			args = append(args, k)
 		}
 	}
 	if p.Poster != "" {
@@ -290,6 +297,16 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 	return spots, total, rows.Err()
 }
 
+// inOrEqual is "col = ?" for one value and "col IN (?,...)" for more. With IN, even for a
+// single value, SQLite would not walk an index in posted_at order and sorted every matching row
+// instead (all 414 k Audio spots, measured 2026-10-17).
+func inOrEqual(col string, n int) string {
+	if n == 1 {
+		return col + " = ?"
+	}
+	return fmt.Sprintf("%s IN (%s)", col, strings.TrimSuffix(strings.Repeat("?,", n), ","))
+}
+
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanSpot(sc rowScanner) (*Spot, error) {
@@ -300,7 +317,7 @@ func scanSpot(sc rowScanner) (*Spot, error) {
 		&s.ID, &s.MessageID, &s.ArticleNum, &s.Title, &s.Description,
 		&s.Poster, &postedAt, &s.Tag, &s.NzbID,
 		&s.Category, &s.SubCatA, &s.SubCatB, &s.SubCatC, &s.SubCatD,
-		&s.Size, &s.ImageURL, &verified, &moderated, &isAdult, &s.SpotterID,
+		&s.Size, &s.ImageURL, &verified, &moderated, &isAdult, &s.SpotterID, &s.Kind,
 	)
 	if err != nil {
 		return nil, err

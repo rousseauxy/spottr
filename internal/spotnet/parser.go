@@ -125,8 +125,11 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 
 	posterName := strings.TrimSpace(from[:ltIdx])
 
-	// Parse title and tag from subject
-	title, tag := parseSubject(ai.Subject, isLegacy)
+	// Parse title and tag from subject. title and posterName stay exactly as parsed, because
+	// that is what the header signature covers; the spot stores them decoded for display
+	// (RFC 2047 words, 8-bit Windows-1252).
+	title, _ := parseSubject(ai.Subject, isLegacy)
+	shownTitle, shownTag := parseSubject(DecodeHeaderText(ai.Subject), isLegacy)
 
 	postedAt, err := resolvePostedAt(fields[3], ai.Date)
 	if err != nil {
@@ -136,10 +139,10 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 	spot := &db.Spot{
 		MessageID:  ai.MessageID,
 		ArticleNum: ai.ArticleNum,
-		Title:      title,
-		Poster:     posterName,
+		Title:      shownTitle,
+		Poster:     DecodeHeaderText(posterName),
 		PostedAt:   postedAt,
-		Tag:        tag,
+		Tag:        shownTag,
 		Category:   category,
 		SubCatA:    subA,
 		SubCatB:    subB,
@@ -150,6 +153,7 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 		// `sub_cat_d NOT LIKE '%z3%'` filter ran on every browse query and
 		// could not use an index.
 		IsAdult: IsAdultSubCat(subD),
+		Kind:    db.KindOf(category, subD),
 	}
 
 	// fields[len-1] is the header signature; the master key is chosen by keyid.
@@ -291,21 +295,11 @@ func parseSubCats(s string) (subA, subB, subC, subD string) {
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
-// latin1ToUTF8 converts a Latin-1 (ISO-8859-1) byte slice to valid UTF-8.
-// Latin-1 codepoints map 1:1 to Unicode, so each byte becomes its rune.
-func latin1ToUTF8(b []byte) []byte {
-	runes := make([]rune, len(b))
-	for i, c := range b {
-		runes[i] = rune(c)
-	}
-	return []byte(string(runes))
-}
-
 // sanitizeXML ensures the XML is valid UTF-8 and strips any encoding
 // declaration that would confuse Go's XML parser (which only handles UTF-8/16).
 func sanitizeXML(b []byte) []byte {
 	if !utf8.Valid(b) {
-		b = latin1ToUTF8(b)
+		b = []byte(Windows1252ToUTF8(b))
 	}
 	// Strip <?xml ... encoding="..."?> declaration so Go doesn't reject it
 	s := string(b)

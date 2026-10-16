@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // migration is one forward-only schema change. Statements run inside a single
@@ -13,6 +14,8 @@ type migration struct {
 	version int
 	name    string
 	stmts   []string
+	// fn runs after stmts, in the same transaction, for a change SQL alone cannot express.
+	fn func(tx *sql.Tx) error
 }
 
 // migrations must be append-only. Never renumber or edit a released entry —
@@ -90,6 +93,104 @@ var migrations = []migration{
 			  WHERE group_name = 'free.pt'`,
 		},
 	},
+	{
+		version: 5,
+		name:    "add spots.kind (movie, series, book, comic, erotic); index kind and category",
+		stmts: []string{
+			// The search index trigger fired on ANY update of a row, so filling a new column
+			// would rewrite the full-text index for every spot. It only needs to fire when an
+			// indexed column changes.
+			`DROP TRIGGER IF EXISTS spots_au`,
+			spotsUpdateTrigger,
+			`ALTER TABLE spots ADD COLUMN kind INTEGER NOT NULL DEFAULT 0`,
+			`UPDATE spots SET kind = ` + kindCaseSQL + ` WHERE category = 0`,
+			// Filtering by kind or main category is the browse query plus kind = ? or
+			// category = ?, newest first. Partial on the default browse condition like
+			// idx_spots_browse, so the COUNT(*) is answered from the index alone: without
+			// is_adult in it, Audio (414 k spots) read every row and took 0.9 s (measured on
+			// a copy 2026-10-17).
+			`CREATE INDEX IF NOT EXISTS idx_spots_kind
+			   ON spots(kind, posted_at DESC) WHERE moderated = 0 AND is_adult = 0`,
+			// idx_spots_category (category, sub_cat_a) already exists in the base schema; a new
+			// index under that name would silently not be created.
+			`CREATE INDEX IF NOT EXISTS idx_spots_category_browse
+			   ON spots(category, posted_at DESC) WHERE moderated = 0 AND is_adult = 0`,
+		},
+	},
+	{
+		version: 6,
+		name:    "re-decode titles, tags and posters stored as raw 8-bit text",
+		// 27,657 of 2.49 M titles (2026-10-17) held Windows-1252 bytes, not UTF-8, and showed
+		// as "d�" in the browser. New spots are decoded at parse time; this repairs the rest.
+		fn: redecodeEightBitText,
+	},
+}
+
+// redecodeEightBitText rewrites every title, tag and poster that is not valid UTF-8, reading the
+// bytes as Windows-1252 (the same decoding the parser now applies).
+func redecodeEightBitText(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id, CAST(title AS BLOB), CAST(tag AS BLOB), CAST(poster AS BLOB) FROM spots`)
+	if err != nil {
+		return err
+	}
+	type fix struct {
+		id                 int64
+		title, tag, poster string
+	}
+	var fixes []fix
+	for rows.Next() {
+		var id int64
+		var title, tag, poster []byte
+		if err := rows.Scan(&id, &title, &tag, &poster); err != nil {
+			rows.Close()
+			return err
+		}
+		if utf8.Valid(title) && utf8.Valid(tag) && utf8.Valid(poster) {
+			continue
+		}
+		fixes = append(fixes, fix{id, toUTF8(title), toUTF8(tag), toUTF8(poster)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE spots SET title = ?, tag = ?, poster = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, f := range fixes {
+		if _, err := stmt.Exec(f.title, f.tag, f.poster, f.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// toUTF8 keeps valid UTF-8 and reads anything else as Windows-1252, like spotnet.Windows1252ToUTF8
+// (db cannot import spotnet, which imports db).
+func toUTF8(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	high := [32]rune{
+		0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+		0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F,
+		0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+		0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+	}
+	var sb strings.Builder
+	for _, c := range b {
+		switch {
+		case c < 0x80:
+			sb.WriteByte(c)
+		case c < 0xA0:
+			sb.WriteRune(high[c-0x80])
+		default:
+			sb.WriteRune(rune(c))
+		}
+	}
+	return sb.String()
 }
 
 // migrate applies the base schema then any pending migrations.
@@ -130,6 +231,12 @@ func (db *DB) applyMigration(m migration) error {
 				continue
 			}
 			return fmt.Errorf("%s: %w", firstLine(s), err)
+		}
+	}
+
+	if m.fn != nil {
+		if err := m.fn(tx); err != nil {
+			return err
 		}
 	}
 

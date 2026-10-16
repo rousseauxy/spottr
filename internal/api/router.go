@@ -370,6 +370,14 @@ func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// kind=movie,series,book,comic,erotic narrows the Image category by its Spotnet type code.
+	if kindStr := q.Get("kind"); kindStr != "" {
+		for _, k := range strings.Split(kindStr, ",") {
+			if n, ok := db.KindNames[strings.TrimSpace(k)]; ok {
+				params.Kinds = append(params.Kinds, n)
+			}
+		}
+	}
 	if sort := q.Get("sort"); sort != "" {
 		params.SortBy = sort
 	}

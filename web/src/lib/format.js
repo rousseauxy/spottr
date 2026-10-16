@@ -38,6 +38,33 @@ export function getCat(id) {
   return CATEGORIES.find(c => c.id === id) ?? CATEGORIES[0];
 }
 
+// Spotnet's Image category ("Beeld", id 0) mixes films, series, books and comics; the API's Kind
+// says which (1 movie, 2 series, 3 book, 4 comic, 5 erotic; 0 = older spots without a type code).
+const KINDS = {
+  1: { label: 'Movie', emoji: '🎬', color: 'text-blue-400', bg: 'bg-blue-900/30' },
+  2: { label: 'Series', emoji: '📺', color: 'text-sky-400', bg: 'bg-sky-900/30' },
+  3: { label: 'Book', emoji: '📖', color: 'text-amber-400', bg: 'bg-amber-900/30' },
+  4: { label: 'Comic', emoji: '💬', color: 'text-pink-400', bg: 'bg-pink-900/30' },
+  5: { label: 'Erotic', emoji: '🔞', color: 'text-rose-400', bg: 'bg-rose-900/30' },
+};
+
+/** The label, emoji and colours for a spot: its kind for Image spots, else its main category. */
+export function spotCat(spot) {
+  return (spot.Category === 0 && KINDS[spot.Kind]) || getCat(spot.Category);
+}
+
+/** The filter row: one entry per kind of Image spot, then the other main categories. */
+export const FILTERS = [
+  { key: 'all', label: 'All', emoji: '⊞' },
+  { key: 'movie', label: 'Movies', emoji: '🎬', kind: 'movie' },
+  { key: 'series', label: 'Series', emoji: '📺', kind: 'series' },
+  { key: 'book', label: 'Books', emoji: '📖', kind: 'book' },
+  { key: 'comic', label: 'Comics', emoji: '💬', kind: 'comic' },
+  { key: 'audio', label: 'Audio', emoji: '🎵', cat: 1 },
+  { key: 'game', label: 'Games', emoji: '🎮', cat: 2 },
+  { key: 'app', label: 'Apps', emoji: '💿', cat: 3 },
+];
+
 // Icon overrides keyed by [category][format/platform index from SubCatA]
 const FORMAT_ICONS = {
   // Video formats (0.a.n)
@@ -90,7 +117,7 @@ export function getFormatEmoji(spot) {
       if (catIcons[n]) return catIcons[n];
     }
   }
-  return getCat(spot.Category).emoji;
+  return spotCat(spot).emoji;
 }
 
 // Subcategory name maps keyed as "cat.slot.n"

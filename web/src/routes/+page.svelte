@@ -3,7 +3,7 @@
   import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getSpots } from '#lib/api.js';
   import { getConfig } from '#lib/config.js';
-  import { formatSize, formatDate, getCat, getFormatEmoji, CATEGORIES, parseSubCat } from '#lib/format.js';
+  import { formatSize, formatDate, spotCat, getFormatEmoji, FILTERS, parseSubCat } from '#lib/format.js';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let spots = $state([]);
@@ -12,7 +12,8 @@
   let error = $state('');
 
   let query = $state('');
-  let selectedCat = $state(null);   // null = all
+  let selectedFilter = $state('all'); // a FILTERS key
+  const activeFilter = $derived(FILTERS.find(f => f.key === selectedFilter) ?? FILTERS[0]);
   let page = $state(0);
   let adult = $state(false);
   const PAGE_SIZE = 50;
@@ -25,7 +26,7 @@
   function syncURL() {
     const params = new URLSearchParams();
     if (query) params.set('q', query);
-    if (selectedCat != null) params.set('cat', String(selectedCat));
+    if (selectedFilter !== 'all') params.set('f', selectedFilter);
     if (page > 0) params.set('p', String(page));
     if (adult) params.set('adult', '1');
     const search = params.toString();
@@ -38,8 +39,9 @@
     // Restore filter state from URL (back-button support)
     const params = new URLSearchParams(window.location.search);
     query = params.get('q') ?? '';
-    const catParam = params.get('cat');
-    selectedCat = catParam !== null ? parseInt(catParam) : null;
+    // ?f=comic; an older ?cat=1 link still selects Audio, Games or Apps.
+    const legacyCat = params.get('cat');
+    selectedFilter = params.get('f') ?? FILTERS.find(f => f.cat != null && String(f.cat) === legacyCat)?.key ?? 'all';
     page = parseInt(params.get('p') ?? '0');
     adult = params.get('adult') === '1';
 
@@ -55,7 +57,8 @@
     try {
       const res = await getSpots({
         q: query || undefined,
-        cat: selectedCat,
+        cat: activeFilter.cat,
+        kind: activeFilter.kind,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
         adult: adult || undefined,
@@ -74,8 +77,8 @@
     debounceTimer = setTimeout(() => { page = 0; syncURL(); load(); }, 350);
   }
 
-  function selectCat(id) {
-    selectedCat = id;
+  function selectFilter(key) {
+    selectedFilter = key;
     page = 0;
     syncURL();
     load();
@@ -150,10 +153,10 @@
 
   <!-- Category tabs -->
   <div class="flex gap-1 mb-5 overflow-x-auto pb-1 scrollbar-hide">
-    {#each CATEGORIES as cat}
-      {@const active = selectedCat === cat.id}
+    {#each FILTERS as cat}
+      {@const active = selectedFilter === cat.key}
       <button
-        onclick={() => selectCat(cat.id)}
+        onclick={() => selectFilter(cat.key)}
         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors
                {active ? 'bg-orange-500 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}"
       >
@@ -187,7 +190,7 @@
   {:else}
     <div class="space-y-px rounded-xl overflow-hidden border border-[#2a2d3a]">
       {#each spots as spot (spot.ID)}
-        {@const cat = getCat(spot.Category)}
+        {@const cat = spotCat(spot)}
         {@const badges = spotBadges(spot)}
         <div class="bg-[#1a1d27] hover:bg-[#1f2335] transition-colors group flex items-start gap-3 px-4 py-3">
           <!-- Category icon -->
@@ -198,7 +201,7 @@
           <!-- Main content -->
           <div class="flex-1 min-w-0">
             <a href="/spots/{spot.ID}"
-               class="font-medium text-slate-100 hover:text-orange-400 transition-colors line-clamp-2 leading-snug">
+               class="font-medium text-slate-100 hover:text-orange-400 transition-colors line-clamp-2 leading-snug wrap-anywhere">
               {spot.Title || '(no title)'}
             </a>
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
@@ -226,7 +229,7 @@
               onclick={(e) => { e.stopPropagation(); sendToSAB(spot); }}
               disabled={!!sending[spot.ID]}
               title="Send to SABnzbd"
-              class="opacity-0 group-hover:opacity-100 transition-opacity btn-sm px-2! py-1!
+              class="pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity btn-sm px-2! py-1!
                      {sending[spot.ID] === 'ok' ? 'bg-green-700!' : sending[spot.ID] === 'err' ? 'bg-red-700!' : ''}"
             >
               {#if sending[spot.ID] === 'ok'}✓

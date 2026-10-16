@@ -4,7 +4,7 @@
   import { getSpot } from '#lib/api.js';
   import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getConfig } from '#lib/config.js';
-  import { formatSize, formatDate, getCat, getFormatEmoji, parseSubCatSections, renderBBCode } from '#lib/format.js';
+  import { formatSize, formatDate, spotCat, getFormatEmoji, parseSubCatSections, renderBBCode } from '#lib/format.js';
 
   let spot = $state(null);
   let loading = $state(true);
@@ -55,7 +55,7 @@
     <div class="card p-8 text-center text-red-400">{error}</div>
 
   {:else if spot}
-    {@const cat = getCat(spot.Category)}
+    {@const cat = spotCat(spot)}
     {@const sections = parseSubCatSections(spot)}
 
     <div class="card overflow-hidden">
@@ -65,7 +65,7 @@
           {getFormatEmoji(spot)}
         </div>
         <div class="flex-1 min-w-0">
-          <h1 class="text-lg font-semibold text-slate-100 leading-snug">{spot.Title}</h1>
+          <h1 class="text-lg font-semibold text-slate-100 leading-snug wrap-anywhere">{spot.Title}</h1>
           <div class="flex flex-wrap items-center gap-x-3 mt-1 text-sm text-slate-500">
             <span class="{cat.color} font-medium">{cat.label}</span>
             {#if spot.Poster}<span>by {spot.Poster}</span>{/if}
