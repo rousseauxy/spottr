@@ -340,14 +340,23 @@ func (h *Handler) clampPaging(limit, offset int) (int, int) {
 	return limit, offset
 }
 
+// includeAdult decides whether a listing shows 18+ spots: only when the server allows them
+// (ALLOW_ADULT) AND the viewer asked for them (the 18+ box, adult=1). Until 2026-10-17 an allowing
+// server showed them in every listing by default, and the box did nothing.
+func includeAdult(serverAllows bool, requested string) bool {
+	return serverAllows && requested == "1"
+}
+
+// hiddenAdult reports whether a spot must not be served at all: 18+ while the server does not
+// allow 18+ spots. A spot's page, image and NZB are reachable by id, not only through a listing.
+func (h *Handler) hiddenAdult(spot *db.Spot) bool {
+	return spot != nil && spot.IsAdult && !h.cfg.AllowAdult
+}
+
 func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	// Adult content: hidden by default; expose if config allows OR caller passes adult=1
-	allowAdult := h.cfg.AllowAdult
-	if q.Get("adult") == "1" && h.cfg.AllowAdult {
-		allowAdult = true
-	}
+	allowAdult := includeAdult(h.cfg.AllowAdult, q.Get("adult"))
 
 	limit, offset := h.clampPaging(parseIntOr(q.Get("limit"), 25), parseIntOr(q.Get("offset"), 0))
 
@@ -422,7 +431,7 @@ func (h *Handler) getSpot(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	if spot == nil {
+	if spot == nil || h.hiddenAdult(spot) {
 		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -457,7 +466,7 @@ func (e *nzbStatusError) Error() string { return e.msg }
 // disagree about what a spot's NZB is.
 func (h *Handler) resolveNZB(ctx context.Context, id int64) (*db.Spot, []byte, error) {
 	spot, err := h.db.GetSpotByID(ctx, id)
-	if err != nil || spot == nil {
+	if err != nil || spot == nil || h.hiddenAdult(spot) {
 		return nil, nil, &nzbStatusError{http.StatusNotFound, "spot not found"}
 	}
 	if spot.NzbID == "" {
@@ -584,7 +593,7 @@ func (h *Handler) getImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spot, err := h.db.GetSpotByID(r.Context(), id)
-	if err != nil || spot == nil || spot.ImageURL == "" {
+	if err != nil || spot == nil || spot.ImageURL == "" || h.hiddenAdult(spot) {
 		http.NotFound(w, r)
 		return
 	}
