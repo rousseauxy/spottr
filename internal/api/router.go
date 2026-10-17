@@ -370,6 +370,15 @@ func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// tag=<exact tag>; sub=a5,c2 (subcategory codes, all required): the links on a spot's page.
+	params.Tag = strings.TrimSpace(q.Get("tag"))
+	if subStr := q.Get("sub"); subStr != "" {
+		for _, c := range strings.Split(subStr, ",") {
+			if c = strings.ToLower(strings.TrimSpace(c)); db.ValidSubCode(c) {
+				params.SubCodes = append(params.SubCodes, c)
+			}
+		}
+	}
 	// kind=movie,series,book,comic,erotic narrows the Image category by its Spotnet type code.
 	if kindStr := q.Get("kind"); kindStr != "" {
 		for _, k := range strings.Split(kindStr, ",") {

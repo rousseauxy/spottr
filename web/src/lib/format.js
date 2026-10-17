@@ -167,11 +167,46 @@ const SUBCAT = {
  * @returns {string[]}
  */
 export function parseSubCat(str, cat, slot) {
+  return subCatItems(str, cat, slot).map(i => i.label);
+}
+
+/**
+ * Like parseSubCat, with each label's code ("a5") for a filter link.
+ * Only codes of the slot's own letter count: sub_cat_d also holds the type code ("z2"), which
+ * used to be read as genre 2 and showed every book as "Animation".
+ * @returns {{ code: string, label: string }[]}
+ */
+export function subCatItems(str, cat, slot) {
   if (!str) return [];
-  return str.split('|').filter(Boolean).map(s => {
-    const n = parseInt(s.slice(1));
-    return SUBCAT[`${cat}.${slot}.${n}`] ?? null;
+  return str.split('|').filter(s => s && s[0] === slot).map(s => {
+    const label = SUBCAT[`${cat}.${slot}.${parseInt(s.slice(1))}`];
+    return label ? { code: s, label } : null;
   }).filter(Boolean);
+}
+
+/** The FILTERS key a spot belongs to ('all' for older Image spots without a type code). */
+export function filterKeyFor(spot) {
+  if (spot.Category === 0) return { 1: 'movie', 2: 'series', 3: 'book', 4: 'comic' }[spot.Kind] ?? 'all';
+  return FILTERS.find(f => f.cat === spot.Category)?.key ?? 'all';
+}
+
+/**
+ * The list URL for one badge of a spot, or null when it cannot have one: a code only means
+ * something within its category, and older Image spots carry no type code to narrow by (a
+ * search over every category was slow, 1.5 s, and mixed meanings).
+ */
+export function badgeHref(spot, code) {
+  return filterKeyFor(spot) === 'all' ? null : filterHref(spot, { sub: code });
+}
+
+/** The list URL for one filter value of a spot: its kind or category, plus the given parameters. */
+export function filterHref(spot, extra = {}) {
+  const params = new URLSearchParams();
+  const key = filterKeyFor(spot);
+  if (key !== 'all') params.set('f', key);
+  for (const [k, v] of Object.entries(extra)) if (v) params.set(k, v);
+  const q = params.toString();
+  return q ? `/?${q}` : '/';
 }
 
 // Section labels per category slot
@@ -197,7 +232,7 @@ export function parseSubCatSections(spot) {
   ];
   const out = [];
   for (const { key, str } of slots) {
-    const values = parseSubCat(str, cat, key);
+    const values = subCatItems(str, cat, key);
     if (values.length) {
       out.push({ label: SLOT_LABELS[`${cat}.${key}`] ?? key.toUpperCase(), values });
     }

@@ -1,9 +1,10 @@
 <script>
   import { onMount, tick } from 'svelte';
+  import { afterNavigate } from '$app/navigation';
   import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getSpots } from '#lib/api.js';
   import { getConfig } from '#lib/config.js';
-  import { formatSize, formatDate, spotCat, getFormatEmoji, FILTERS, parseSubCat } from '#lib/format.js';
+  import { formatSize, formatDate, spotCat, getFormatEmoji, FILTERS, subCatItems, badgeHref } from '#lib/format.js';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let spots = $state([]);
@@ -16,6 +17,10 @@
   const activeFilter = $derived(FILTERS.find(f => f.key === selectedFilter) ?? FILTERS[0]);
   let page = $state(0);
   let adult = $state(false);
+  // Narrowing that comes from a link on a spot (poster, tag, a badge); each shows as a chip.
+  let poster = $state('');
+  let tag = $state('');
+  let sub = $state(''); // one subcategory code, e.g. "a5"; its meaning depends on the filter
   const PAGE_SIZE = 50;
 
   let debounceTimer;
@@ -27,6 +32,9 @@
     const params = new URLSearchParams();
     if (query) params.set('q', query);
     if (selectedFilter !== 'all') params.set('f', selectedFilter);
+    if (poster) params.set('poster', poster);
+    if (tag) params.set('tag', tag);
+    if (sub) params.set('sub', sub);
     if (page > 0) params.set('p', String(page));
     if (adult) params.set('adult', '1');
     const search = params.toString();
@@ -35,8 +43,14 @@
     history.replaceState(history.state, '', search ? '/?' + search : '/');
   }
 
-  onMount(async () => {
-    // Restore filter state from URL (back-button support)
+  onMount(() => {
+    allowAdult = getConfig().allow_adult;
+    authenticated = getConfig().authenticated ?? true;
+  });
+
+  // Read the filters from the URL on the first load AND after every navigation: a link from a
+  // row on this page (a poster, a badge) lands on this same page, which is not mounted again.
+  afterNavigate(async () => {
     const params = new URLSearchParams(window.location.search);
     query = params.get('q') ?? '';
     // ?f=comic; an older ?cat=1 link still selects Audio, Games or Apps.
@@ -44,10 +58,13 @@
     selectedFilter = params.get('f') ?? FILTERS.find(f => f.cat != null && String(f.cat) === legacyCat)?.key ?? 'all';
     page = parseInt(params.get('p') ?? '0');
     adult = params.get('adult') === '1';
-
-    allowAdult = getConfig().allow_adult;
-    authenticated = getConfig().authenticated ?? true;
+    poster = params.get('poster') ?? '';
+    tag = params.get('tag') ?? '';
+    sub = params.get('sub') ?? '';
     await load();
+    // On a phone the filter row scrolls sideways; a link can land on a tab that is off screen.
+    await tick();
+    document.querySelector('[data-active-filter]')?.scrollIntoView({ inline: 'center', block: 'nearest' });
   });
 
   // ── Loader ─────────────────────────────────────────────────────────────────
@@ -59,6 +76,9 @@
         q: query || undefined,
         cat: activeFilter.cat,
         kind: activeFilter.kind,
+        poster: poster || undefined,
+        tag: tag || undefined,
+        sub: sub || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
         adult: adult || undefined,
@@ -79,6 +99,7 @@
 
   function selectFilter(key) {
     selectedFilter = key;
+    sub = ''; // a subcategory code means something else in another category
     page = 0;
     syncURL();
     load();
@@ -95,15 +116,31 @@
   function spotBadges(spot) {
     const badges = [];
     if (spot.Category === 0) {
-      badges.push(...parseSubCat(spot.SubCatA, 0, 'a'));
-      badges.push(...parseSubCat(spot.SubCatB, 0, 'b'));
-      badges.push(...parseSubCat(spot.SubCatC, 0, 'c').slice(0, 2));
+      badges.push(...subCatItems(spot.SubCatA, 0, 'a'));
+      badges.push(...subCatItems(spot.SubCatB, 0, 'b'));
+      badges.push(...subCatItems(spot.SubCatC, 0, 'c').slice(0, 2));
     } else if (spot.Category === 1) {
-      badges.push(...parseSubCat(spot.SubCatA, 1, 'a'));
+      badges.push(...subCatItems(spot.SubCatA, 1, 'a'));
     } else if (spot.Category === 2 || spot.Category === 3) {
-      badges.push(...parseSubCat(spot.SubCatA, spot.Category, 'a'));
+      badges.push(...subCatItems(spot.SubCatA, spot.Category, 'a'));
     }
     return badges.slice(0, 4);
+  }
+
+  // The label of the active badge filter, for its chip ("ePub" for a5 among books).
+  const subLabel = $derived.by(() => {
+    if (!sub) return '';
+    const cat = activeFilter.cat ?? 0;
+    return subCatItems(sub + '|', cat, sub[0])[0]?.label ?? sub;
+  });
+
+  function clearNarrowing(which) {
+    if (which === 'poster') poster = '';
+    if (which === 'tag') tag = '';
+    if (which === 'sub') sub = '';
+    page = 0;
+    syncURL();
+    load();
   }
 
   // SAB send: the dialog asks for category and password; the row shows the result briefly.
@@ -156,6 +193,7 @@
     {#each FILTERS as cat}
       {@const active = selectedFilter === cat.key}
       <button
+        data-active-filter={active ? '' : undefined}
         onclick={() => selectFilter(cat.key)}
         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors
                {active ? 'bg-orange-500 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}"
@@ -165,6 +203,20 @@
       </button>
     {/each}
   </div>
+
+  {#if poster || tag || sub}
+    <div class="flex flex-wrap gap-2 -mt-3 mb-4">
+      {#each [['poster', 'Posted by', poster], ['tag', 'Tag', tag], ['sub', activeFilter.label, subLabel]] as [key, what, value]}
+        {#if value}
+          <button onclick={() => clearNarrowing(key)} title="Remove this filter"
+                  class="inline-flex items-center gap-1.5 text-sm rounded-full pl-3 pr-2 py-1 bg-orange-500/15 text-orange-300 border border-orange-500/30 hover:bg-orange-500/25">
+            <span class="text-orange-400/70">{what}:</span> {value}
+            <span aria-hidden="true" class="text-orange-300/80">✕</span>
+          </button>
+        {/if}
+      {/each}
+    </div>
+  {/if}
 
   <!-- Spot list -->
   {#if error}
@@ -206,14 +258,19 @@
             </a>
             <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
               {#if spot.Poster}
-                <span class="text-xs text-slate-500">{spot.Poster}</span>
+                <a href="/?poster={encodeURIComponent(spot.Poster)}" class="text-xs text-slate-500 hover:text-slate-300 hover:underline">{spot.Poster}</a>
               {/if}
               {#if spot.Tag}
                 <span class="text-xs text-slate-600">·</span>
-                <span class="text-xs text-slate-500 italic">{spot.Tag}</span>
+                <a href="/?tag={encodeURIComponent(spot.Tag)}" class="text-xs text-slate-500 italic hover:text-slate-300 hover:underline">{spot.Tag}</a>
               {/if}
               {#each badges as b}
-                <span class="badge bg-slate-700/60 text-slate-400">{b}</span>
+                {@const href = badgeHref(spot, b.code)}
+                {#if href}
+                  <a {href} class="badge bg-slate-700/60 text-slate-400 hover:bg-slate-600 hover:text-white transition-colors">{b.label}</a>
+                {:else}
+                  <span class="badge bg-slate-700/60 text-slate-400">{b.label}</span>
+                {/if}
               {/each}
             </div>
           </div>

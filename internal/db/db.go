@@ -76,9 +76,27 @@ type SearchParams struct {
 	// Before implements keyset pagination: return only spots posted strictly
 	// before this instant. Far cheaper than a large OFFSET.
 	Before     time.Time
-	SortBy     string // "date" (default) | "size" | "relevance"
-	AllowAdult bool   // include 18+ spots; default false
-	Kinds      []int  // KindMovie, KindComic, ... to include (nil = all)
+	SortBy     string   // "date" (default) | "size" | "relevance"
+	AllowAdult bool     // include 18+ spots; default false
+	Kinds      []int    // KindMovie, KindComic, ... to include (nil = all)
+	Tag        string   // exact tag, matched through the full-text index's tag column
+	SubCodes   []string // Spotnet subcategory codes that must all be present: "a5", "c2", "d31", "z2"
+}
+
+// subCodeColumn maps a subcategory code's letter to its column; z codes live in sub_cat_d.
+var subCodeColumn = map[byte]string{'a': "s.sub_cat_a", 'b': "s.sub_cat_b", 'c': "s.sub_cat_c", 'd': "s.sub_cat_d", 'z': "s.sub_cat_d"}
+
+// ValidSubCode reports whether s is a subcategory code like "a5" or "d31".
+func ValidSubCode(s string) bool {
+	if len(s) < 2 || len(s) > 4 || subCodeColumn[s[0]] == "" {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Open opens (or creates) the SQLite database and applies the schema.
@@ -216,6 +234,19 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 		for _, c := range p.Categories {
 			args = append(args, c)
 		}
+	}
+	if p.Tag != "" {
+		// The tag column of the full-text index, as a phrase: exact words, indexed.
+		where = append(where, "s.id IN (SELECT rowid FROM spots_fts WHERE spots_fts MATCH ?)")
+		args = append(args, `{tag}: "`+strings.ReplaceAll(p.Tag, `"`, `""`)+`"`)
+	}
+	for _, code := range p.SubCodes {
+		if !ValidSubCode(code) {
+			continue
+		}
+		// Codes are stored as "a5|c2|"; "|" before and after makes "d3" not match "d31".
+		where = append(where, fmt.Sprintf("instr('|' || %s, ?) > 0", subCodeColumn[code[0]]))
+		args = append(args, "|"+code+"|")
 	}
 	if len(p.Kinds) > 0 {
 		where = append(where, inOrEqual("s.kind", len(p.Kinds)))
