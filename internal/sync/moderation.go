@@ -20,6 +20,7 @@ type ModerationStats struct {
 	Unverified   int   // the withdrawal's own signature did not check out
 	OwnerLookups int   // spots whose owner was read from Usenet for this
 	OwnerUnknown int   // owner could not be learned (article gone, no X-User-Key)
+	ByModerator  int   // applied on the network moderator's signature (counted in Applied too)
 }
 
 // applyModeration honours withdrawal requests whose ownership checks out.
@@ -65,6 +66,13 @@ func (e *Engine) applyModeration(ctx context.Context, cmds []spotnet.ModerationC
 		}
 		if t.Moderated {
 			continue // already withdrawn (posters often send the same withdrawal twice)
+		}
+		if cmd.Moderator {
+			// Signed with the network's moderator key: no owner, no time limit (Spotweb).
+			targets = append(targets, cmd.TargetID)
+			queued[cmd.TargetID] = true
+			st.ByModerator++
+			continue
 		}
 		if !spotnet.WithinDisposeWindow(cmd, t.Posted) {
 			st.Rejected++

@@ -12,6 +12,8 @@
   let sabState = $state('');  // '' | 'sending' | 'ok' | 'err'
   let sabError = $state('');
   let authenticated = $state(true);
+  // An 18+ spot shows a generic panel instead of its cover until asked.
+  let showAdultImage = $state(false);
 
   onMount(async () => {
     authenticated = getConfig().authenticated ?? true;
@@ -77,8 +79,15 @@
       <!-- Image -->
       {#if spot.ImageURL}
         <div class="px-6 pt-4">
-          <img src="/v1/spots/{spot.ID}/image" alt={spot.Title}
-               class="rounded-lg max-h-80 object-contain w-full bg-slate-900" loading="lazy" />
+          {#if spot.IsAdult && !showAdultImage}
+            <div class="rounded-lg h-48 w-full bg-slate-900 border border-[#2a2d3a] flex flex-col items-center justify-center gap-3">
+              <span class="text-5xl" aria-hidden="true">🔞</span>
+              <button type="button" class="btn-sm" onclick={() => (showAdultImage = true)}>Show image</button>
+            </div>
+          {:else}
+            <img src="/v1/spots/{spot.ID}/image" alt={spot.Title}
+                 class="rounded-lg max-h-80 object-contain w-full bg-slate-900" loading="lazy" />
+          {/if}
         </div>
       {/if}
 

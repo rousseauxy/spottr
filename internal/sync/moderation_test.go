@@ -83,6 +83,18 @@ func TestApplyModerationLooksUpUnknownOwners(t *testing.T) {
 		t.Error("someone else's spot was withdrawn")
 	}
 
+	// A moderator command applies to a spot with an unknown owner, years later, without a lookup.
+	if _, err := database.InsertSpots(ctx, []db.Spot{{MessageID: "<spam@spot.net>", Title: "spam", PostedAt: posted}}); err != nil {
+		t.Fatal(err)
+	}
+	lookups = 0
+	st, err = e.applyModeration(ctx, []spotnet.ModerationCommand{
+		{Action: "dispose", TargetID: "<spam@spot.net>", Verified: true, Moderator: true, Stamp: posted.AddDate(2, 0, 0)},
+	}, head)
+	if err != nil || st.Applied != 1 || st.ByModerator != 1 || lookups != 0 {
+		t.Errorf("moderator command: stats %+v, lookups %d, err %v", st, lookups, err)
+	}
+
 	// A broken connection is reported, and no further lookups are made on it.
 	if _, err := database.ExecContext(ctx, `UPDATE spots SET spotter_id = '' WHERE message_id = '<theirs@spot.net>'`); err != nil {
 		t.Fatal(err)

@@ -67,9 +67,10 @@ func (d *DisposeSweep) sweepGroup(ctx context.Context, group string) error {
 		total.NoTarget += st.NoTarget
 		total.OwnerLookups += st.OwnerLookups
 		total.OwnerUnknown += st.OwnerUnknown
+		total.ByModerator += st.ByModerator
 		if done {
 			d.log.Info("withdrawal sweep complete", "group", group,
-				"applied", total.Applied, "rejected", total.Rejected, "no_target", total.NoTarget,
+				"applied", total.Applied, "by_moderator", total.ByModerator, "rejected", total.Rejected, "no_target", total.NoTarget,
 				"owner_lookups", total.OwnerLookups, "owner_unknown", total.OwnerUnknown)
 			return nil
 		}
@@ -148,7 +149,7 @@ func (d *DisposeSweep) sweepChunk(ctx context.Context, group string) (bool, Mode
 		return false, st, err
 	}
 	d.log.Info("withdrawal sweep chunk", "group", group, "from", from, "to", to,
-		"withdrawals", len(cmds), "applied", st.Applied, "rejected", st.Rejected,
+		"withdrawals", len(cmds), "applied", st.Applied, "by_moderator", st.ByModerator, "rejected", st.Rejected,
 		"no_target", st.NoTarget, "owner_lookups", st.OwnerLookups, "owner_unknown", st.OwnerUnknown,
 		"remaining", end-to)
 	return to >= end, st, nil

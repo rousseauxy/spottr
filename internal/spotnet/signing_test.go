@@ -122,9 +122,13 @@ func TestIsAdultSubCat(t *testing.T) {
 		"z1|z2|": false,
 	}
 	for in, want := range cases {
-		if got := IsAdultSubCat(in); got != want {
-			t.Errorf("IsAdultSubCat(%q) = %v, want %v", in, got, want)
+		if got := IsAdultSubCat(CatImage, in); got != want {
+			t.Errorf("IsAdultSubCat(image, %q) = %v, want %v", in, got, want)
 		}
+	}
+	// In Audio z3 is the audiobook, never 18+.
+	if IsAdultSubCat(CatAudio, "z3|") {
+		t.Error("an audiobook was flagged 18+")
 	}
 }
 

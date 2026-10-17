@@ -133,6 +133,25 @@ var migrations = []migration{
 			`ALTER TABLE sync_state ADD COLUMN dispose_sweep_article_num INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		version: 8,
+		name:    "run the withdrawal sweep again: moderator-key commands are honoured now",
+		stmts: []string{
+			// The first sweep (0.6.0) skipped the network moderator's commands (master key 2,
+			// e.g. the 2015 moderator bots) as unverified. Starting over is safe: spots already
+			// withdrawn are skipped.
+			`UPDATE sync_state SET dispose_sweep_article_num = 0`,
+		},
+	},
+	{
+		version: 9,
+		name:    "audiobooks are not 18+",
+		stmts: []string{
+			// z3 is "erotic" only in the Image category; in Audio it is the audiobook. Every
+			// audiobook was flagged 18+ and hidden from all listings (3,622 on 2026-10-17).
+			`UPDATE spots SET is_adult = 0 WHERE category <> 0 AND is_adult = 1`,
+		},
+	},
 }
 
 // redecodeEightBitText rewrites every title, tag and poster that is not valid UTF-8, reading the

@@ -3,6 +3,8 @@ package spotnet
 import (
 	"testing"
 	"time"
+
+	"github.com/spottr/spottr/internal/nntp"
 )
 
 func TestLooksLikeModerationCommand(t *testing.T) {
@@ -76,5 +78,43 @@ func TestValidateDisposeTimeWindow(t *testing.T) {
 	// A withdrawal predating the spot it targets is nonsense.
 	if ValidateDispose(cmd, "aaaaaa", now.Add(time.Hour)) {
 		t.Error("withdrawal older than its target was accepted")
+	}
+}
+
+// A real moderator command (free.pt article 2254191, 2015-02-02): a moderator bot withdrawing a
+// mislabelled spot, signed with the network's moderator key, no key of its own.
+func TestParseDisposeRealModeratorCommand(t *testing.T) {
+	ai := nntp.ArticleInfo{
+		Subject:   "DISPOSE XHJY1UM6WWs7p3PVAQwki@spot.net - Fantasy Characters Attack 3D-Hentai",
+		From:      "BenBotSpecial1 <10@12a01.1.10.1422900434.pEI.mod.P9iIrQFAr4FwLGvqZ7NG25zyO-scU-pFLmw8rmEteCndLwh6tfuUBDwlVbbq7DCnmV>",
+		MessageID: "<mpOhU8gwxNwxrzPVAPrnf@spot.net>",
+		Date:      time.Date(2015, 2, 2, 18, 7, 14, 0, time.UTC),
+	}
+	parse := func(ai nntp.ArticleInfo) ModerationCommand {
+		spot, _, err := ParseFromOverview(ai)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd, ok := ParseDispose(spot.Title, spot.HeaderPart, spot.Poster, spot.HeaderSig, spot.SelfSignedKey, spot.MessageID, spot.KeyID, spot.PostedAt)
+		if !ok {
+			t.Fatal("not recognised as a withdrawal")
+		}
+		return cmd
+	}
+
+	cmd := parse(ai)
+	if !cmd.Verified || !cmd.Moderator || cmd.TargetID != "<XHJY1UM6WWs7p3PVAQwki@spot.net>" {
+		t.Fatalf("got %+v, want a verified moderator command for <XHJY1UM6WWs7p3PVAQwki@spot.net>", cmd)
+	}
+	// It applies to a spot with an unknown owner, years later.
+	if !ValidateDispose(cmd, "", ai.Date.AddDate(-3, 0, 0)) {
+		t.Error("a verified moderator command must apply to any spot")
+	}
+
+	// Pointed at another spot, the signature no longer matches.
+	forged := ai
+	forged.Subject = "DISPOSE Someone3lseSpot00000@spot.net - Fantasy Characters Attack 3D-Hentai"
+	if c := parse(forged); c.Verified || ValidateDispose(c, "", ai.Date) {
+		t.Error("a moderator command for another target verified")
 	}
 }

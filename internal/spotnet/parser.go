@@ -152,7 +152,7 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 		// Resolved once at parse time into an indexable column. The old
 		// `sub_cat_d NOT LIKE '%z3%'` filter ran on every browse query and
 		// could not use an index.
-		IsAdult: IsAdultSubCat(subD),
+		IsAdult: IsAdultSubCat(category, subD),
 		Kind:    db.KindOf(category, subD),
 	}
 
@@ -206,7 +206,12 @@ func plausibleSpotTime(t time.Time) bool {
 
 // IsAdultSubCat reports whether a parsed sub-category D string carries the
 // Spotnet 18+ marker (z3).
-func IsAdultSubCat(subD string) bool {
+func IsAdultSubCat(category int, subD string) bool {
+	// z3 is "erotic" only in the Image category; in Audio it is the audiobook. Reading it
+	// everywhere hid 3,622 audiobooks as 18+ (measured 2026-10-17).
+	if category != CatImage {
+		return false
+	}
 	for _, part := range strings.Split(subD, "|") {
 		if strings.EqualFold(strings.TrimSpace(part), "z3") {
 			return true

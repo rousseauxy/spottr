@@ -109,6 +109,7 @@ const FORMAT_ICONS = {
  * @returns {string}
  */
 export function getFormatEmoji(spot) {
+  if (spot.IsAdult) return '🔞'; // a generic mark for 18+ spots, never a hint of the content
   const catIcons = FORMAT_ICONS[spot.Category];
   if (catIcons && spot.SubCatA) {
     const first = spot.SubCatA.split('|')[0];

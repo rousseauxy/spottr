@@ -19,6 +19,9 @@ type ModerationCommand struct {
 	Spotter  string    // spotter id that signed the request, "" if unverified
 	Verified bool      // signature and hashcash both checked out
 	Stamp    time.Time // when the request was posted
+	// Moderator: signed with the network's moderator key (master key 2) rather than by a poster.
+	// Such a command applies to any spot, at any time, as in Spotweb.
+	Moderator bool
 }
 
 var validModerationCommands = map[string]bool{
@@ -52,14 +55,20 @@ func LooksLikeModerationCommand(title string) (ModerationCommand, bool) {
 	return ModerationCommand{Action: action, TargetID: target}, true
 }
 
-// ParseDispose recognises a withdrawal request and verifies its signature.
+// ParseDispose recognises a withdrawal request and verifies its signature. Two kinds exist, both
+// under keyid 2, as in Spotweb (Services_Format_Parsing::parseHeader):
 //
-// Authorisation here is NOT "a moderator said so". A withdrawal is self-signed:
-// the article carries its own public key, so a valid signature proves only that
-// whoever posted it holds that keypair — and anyone can mint a keypair. What
-// makes it meaningful is the spotter id derived from that key, which the caller
-// must compare against the spot being withdrawn (ValidateDispose). Acting on a
-// verified signature alone would let anybody delete anything.
+//   - A moderator command carries no key of its own and is signed with the network's moderator
+//     key (master key 2): the moderator bots of the old network (BenBot*, spotWEGnet) removing
+//     spam and mislabelled spots. Verified, it applies to any spot (Moderator).
+//   - A personal withdrawal carries its poster's own key inline, so a valid signature proves only
+//     that whoever posted it holds that keypair, and anyone can mint one. It is meaningful once
+//     the caller confirms that key's spotter id owns the target spot (ValidateDispose).
+//
+// Deliberately NOT copied from Spotweb: it marks a personal withdrawal verified on the hashcash
+// alone and leaves the spotter id empty when the signature fails, after which
+// removeInvalidDisposes treats it like a moderator command and applies it to any spot. Here a
+// personal withdrawal whose signature fails is never verified.
 func ParseDispose(title, header, poster, signatureB64, selfSignedPubKey, messageID string,
 	keyID int, stamp time.Time) (ModerationCommand, bool) {
 
@@ -69,9 +78,15 @@ func ParseDispose(title, header, poster, signatureB64, selfSignedPubKey, message
 	}
 	cmd.Stamp = stamp
 
-	// Withdrawals are self-signed under keyid 2 with the public key inline.
-	if keyID != 2 || len(selfSignedPubKey) <= minSelfSignedKeyLen {
-		return cmd, true // recognised, but not verifiable — caller must not act on it
+	if keyID != 2 {
+		return cmd, true // recognised, but not a withdrawal Spotnet honours: caller must not act on it
+	}
+	if len(selfSignedPubKey) <= minSelfSignedKeyLen {
+		if VerifyHeader(title, header, poster, signatureB64, 2) {
+			cmd.Verified = true
+			cmd.Moderator = true
+		}
+		return cmd, true
 	}
 
 	if spotter, verified := VerifySelfSigned(
@@ -97,6 +112,9 @@ func ParseDispose(title, header, poster, signatureB64, selfSignedPubKey, message
 // closed here costs an un-applied withdrawal; failing open would let a stranger
 // delete arbitrary spots.
 func ValidateDispose(cmd ModerationCommand, spotSpotterID string, spotStamp time.Time) bool {
+	if cmd.Verified && cmd.Moderator {
+		return true // the network's moderator key: any spot, any time, as in Spotweb
+	}
 	if !cmd.Verified || cmd.Spotter == "" {
 		return false
 	}
