@@ -368,6 +368,32 @@ func (db *DB) SetSyncState(ctx context.Context, group string, lastArticle int64)
 	return err
 }
 
+// GetDisposeSweepState returns the last article the withdrawal sweep has passed (0 = not started).
+func (db *DB) GetDisposeSweepState(ctx context.Context, group string) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx,
+		"SELECT dispose_sweep_article_num FROM sync_state WHERE group_name = ?", group,
+	).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return n, err
+}
+
+// SetDisposeSweepState checkpoints the withdrawal sweep.
+func (db *DB) SetDisposeSweepState(ctx context.Context, group string, article int64) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE sync_state SET dispose_sweep_article_num = ? WHERE group_name = ?`, article, group)
+	return err
+}
+
+// OldestArticle returns the lowest article number indexed, 0 when nothing is.
+func (db *DB) OldestArticle(ctx context.Context) (int64, error) {
+	var n sql.NullInt64
+	err := db.QueryRowContext(ctx, `SELECT MIN(article_num) FROM spots`).Scan(&n)
+	return n.Int64, err
+}
+
 // GetBackfillState returns the lowest article number retrieved so far.
 // Zero means backfill has not started.
 func (db *DB) GetBackfillState(ctx context.Context, group string) (int64, error) {

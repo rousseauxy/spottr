@@ -1,9 +1,9 @@
 package spotnet
 
 import (
-	"crypto"
 	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -108,7 +108,37 @@ func verify(key PublicKey, data string, signatureB64 string) bool {
 		return false
 	}
 	digest := sha1.Sum([]byte(data))
-	return rsa.VerifyPKCS1v15(pub, crypto.SHA1, digest[:], sig) == nil
+	return verifyPKCS1v15SHA1(pub, digest[:], sig)
+}
+
+// sha1DigestInfo is the DER prefix PKCS#1 v1.5 puts before a SHA-1 digest.
+var sha1DigestInfo = []byte{0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14}
+
+// verifyPKCS1v15SHA1 is rsa.VerifyPKCS1v15 without its key-size floor. Since Go 1.24 crypto/rsa
+// rejects keys under 1024 bits, and Spotnet's self-signed keys (withdrawals, poster keys) are 384
+// bits: after the move to Go 1.27 (0.3.0) not one of 2,700 withdrawals verified any more
+// (measured 2026-10-17). Verifying with a public key is plain modular arithmetic; nothing secret
+// is involved, so the textbook check is as good as the library's.
+func verifyPKCS1v15SHA1(pub *rsa.PublicKey, digest, sig []byte) bool {
+	k := (pub.N.BitLen() + 7) / 8
+	tLen := len(sha1DigestInfo) + len(digest)
+	if len(sig) != k || k < tLen+11 || pub.E < 2 {
+		return false
+	}
+	s := new(big.Int).SetBytes(sig)
+	if s.Cmp(pub.N) >= 0 {
+		return false
+	}
+	em := new(big.Int).Exp(s, big.NewInt(int64(pub.E)), pub.N).FillBytes(make([]byte, k))
+
+	want := make([]byte, k)
+	want[1] = 0x01
+	for i := 2; i < k-tLen-1; i++ {
+		want[i] = 0xff
+	}
+	copy(want[k-tLen:], sha1DigestInfo)
+	copy(want[k-len(digest):], digest)
+	return subtle.ConstantTimeCompare(em, want) == 1
 }
 
 // ParseUserKey extracts the spotter's public key from an X-User-Key header.

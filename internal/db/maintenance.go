@@ -261,18 +261,43 @@ func (db *DB) MarkModerated(ctx context.Context, messageIDs []string) (int64, er
 // An empty spotter id means the spot has not been enriched yet, so its owner
 // is unknown.
 func (db *DB) SpotOwner(ctx context.Context, messageID string) (string, time.Time, error) {
-	var spotter string
+	t, _, err := db.DisposeTarget(ctx, messageID)
+	return t.Owner, t.Posted, err
+}
+
+// DisposeTargetInfo is what a withdrawal needs to know about the spot it names.
+type DisposeTargetInfo struct {
+	Owner     string // spotter id; "" until the spot's full headers have been read
+	Posted    time.Time
+	Moderated bool
+}
+
+// DisposeTarget looks up the spot a withdrawal names; found is false when it is not indexed.
+func (db *DB) DisposeTarget(ctx context.Context, messageID string) (DisposeTargetInfo, bool, error) {
+	var t DisposeTargetInfo
 	var stamp int64
+	var moderated int
 	err := db.QueryRowContext(ctx,
-		`SELECT spotter_id, posted_at FROM spots WHERE message_id = ?`, messageID,
-	).Scan(&spotter, &stamp)
+		`SELECT spotter_id, posted_at, moderated FROM spots WHERE message_id = ?`, messageID,
+	).Scan(&t.Owner, &stamp, &moderated)
 	if err == sql.ErrNoRows {
-		return "", time.Time{}, nil
+		return t, false, nil
 	}
 	if err != nil {
-		return "", time.Time{}, err
+		return t, false, err
 	}
-	return spotter, time.Unix(stamp, 0), nil
+	t.Posted = time.Unix(stamp, 0)
+	t.Moderated = moderated == 1
+	return t, true, nil
+}
+
+// SetSpotOwner records the spotter id (and whether the spot's signature verified) learned from
+// a spot's full headers, without touching anything else of the row.
+func (db *DB) SetSpotOwner(ctx context.Context, messageID, spotterID string, verified bool) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE spots SET spotter_id = ?, verified = ? WHERE message_id = ?`,
+		spotterID, boolInt(verified), messageID)
+	return err
 }
 
 // DeleteControlMessages removes withdrawal-request articles that were indexed

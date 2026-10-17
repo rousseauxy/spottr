@@ -19,6 +19,10 @@ const defaultMaxArticleBytes = 32 << 20 // 32 MiB
 // ErrArticleTooLarge is returned when an article exceeds the configured cap.
 var ErrArticleTooLarge = errors.New("nntp: article exceeds size limit")
 
+// ErrNoSuchArticle is the server's 430: the article is gone (expired, or never there). The
+// connection is still fine, unlike a failure to read a reply.
+var ErrNoSuchArticle = errors.New("nntp: no such article")
+
 // Client is a minimal NNTP client supporting the commands needed for Spotnet.
 type Client struct {
 	conn net.Conn
@@ -230,6 +234,9 @@ func (c *Client) Head(messageID string) (map[string]string, error) {
 	resp, err := c.sendCmd("HEAD " + msgID)
 	if err != nil {
 		return nil, err
+	}
+	if strings.HasPrefix(resp, "430") {
+		return nil, ErrNoSuchArticle
 	}
 	if err := checkCode(resp, 221); err != nil {
 		return nil, err

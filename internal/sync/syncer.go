@@ -37,57 +37,6 @@ type Stats struct {
 	Group           string
 }
 
-// applyModeration honours withdrawal requests whose ownership checks out.
-//
-// A verified signature is not sufficient on its own: Spotnet withdrawals are
-// self-signed, so anyone can produce one that verifies. The request is only
-// applied when the signing spotter also owns the target spot and the request
-// is within the allowed window — see spotnet.ValidateDispose.
-//
-// MODERATION_MODE picks the consequence: "mark" hides the spot but keeps the
-// row (reversible), "delete" removes it outright as Spotweb does. Either way
-// the message-id is recorded so a later pass does not re-insert it.
-func (e *Engine) applyModeration(ctx context.Context, cmds []spotnet.ModerationCommand) (int64, error) {
-	var targets []string
-	for _, cmd := range cmds {
-		owner, stamp, err := e.db.SpotOwner(ctx, cmd.TargetID)
-		if err != nil {
-			return 0, err
-		}
-		if owner == "" {
-			// Ownership is unknown until a spot has been enriched, so we
-			// cannot prove this is a retraction rather than an attack.
-			e.log.Debug("dispose skipped: target owner unknown", "target", cmd.TargetID)
-			continue
-		}
-		if !spotnet.ValidateDispose(cmd, owner, stamp) {
-			e.log.Warn("dispose rejected: not the spot's owner or outside the time window",
-				"target", cmd.TargetID, "signer", cmd.Spotter, "owner", owner)
-			continue
-		}
-		targets = append(targets, cmd.TargetID)
-	}
-	if len(targets) == 0 {
-		return 0, nil
-	}
-
-	switch e.cfg.ModerationMode {
-	case config.ModerationDelete:
-		n, err := e.db.DeleteSpotsByMessageID(ctx, targets)
-		if err != nil {
-			return 0, err
-		}
-		if _, err := e.db.MarkModerated(ctx, targets); err != nil {
-			return n, err
-		}
-		return n, nil
-	case config.ModerationMark:
-		return e.db.MarkModerated(ctx, targets)
-	default:
-		return 0, nil
-	}
-}
-
 func New(cfg *config.Config, database *db.DB, log *slog.Logger, pool *nntp.Pool) *Engine {
 	return &Engine{cfg: cfg, db: database, log: log, pool: pool}
 }
@@ -253,11 +202,15 @@ func (e *Engine) syncGroup(ctx context.Context, group string) (*Stats, error) {
 		// within the same chunk, and the ring buffer entry must outlive the
 		// row so a later pass does not resurrect it.
 		if len(disposes) > 0 {
-			n, err := e.applyModeration(ctx, disposes)
+			ms, err := e.applyModeration(ctx, disposes, conn.Head)
+			stats.SpotsModerated += int(ms.Applied)
 			if err != nil {
-				e.log.Error("apply moderation", "err", err)
-			} else {
-				stats.SpotsModerated += int(n)
+				// A failed owner lookup means the connection is no longer trustworthy. Stop
+				// before the checkpoint, so the next run reads this chunk (and its
+				// withdrawals) again; re-inserting its spots is a no-op.
+				conn.MarkBroken()
+				e.log.Warn("apply moderation", "from", chunkFrom, "to", chunkTo, "err", err)
+				break
 			}
 		}
 

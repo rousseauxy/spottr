@@ -124,6 +124,15 @@ var migrations = []migration{
 		// as "d�" in the browser. New spots are decoded at parse time; this repairs the rest.
 		fn: redecodeEightBitText,
 	},
+	{
+		version: 7,
+		name:    "add sync_state.dispose_sweep_article_num for the withdrawal history sweep",
+		stmts: []string{
+			// Withdrawals were dropped at ingest without being applied, for the whole history.
+			// The sweep walks the group forward once and applies them; 0 = not started.
+			`ALTER TABLE sync_state ADD COLUMN dispose_sweep_article_num INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // redecodeEightBitText rewrites every title, tag and poster that is not valid UTF-8, reading the

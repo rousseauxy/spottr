@@ -103,6 +103,12 @@ func ValidateDispose(cmd ModerationCommand, spotSpotterID string, spotStamp time
 	if spotSpotterID == "" || spotSpotterID != cmd.Spotter {
 		return false
 	}
+	return WithinDisposeWindow(cmd, spotStamp)
+}
+
+// WithinDisposeWindow reports whether a withdrawal came after the spot and within disposeMaxAge
+// of it; the cheap check, done before anyone fetches the spot's owner from Usenet.
+func WithinDisposeWindow(cmd ModerationCommand, spotStamp time.Time) bool {
 	if cmd.Stamp.Before(spotStamp) {
 		return false
 	}

@@ -114,6 +114,8 @@ func main() {
 	if cfg.BackfillEnabled {
 		go (&syncer.Backfill{Engine: syncEngine}).Start(ctx)
 	}
+	// Applies the withdrawals of the past once (MODERATION_MODE mark or delete), then stops.
+	go (&syncer.DisposeSweep{Engine: syncEngine}).Start(ctx)
 	go syncer.NewMaintainer(cfg, database, log).Start(ctx)
 	go pool.RunReaper(ctx)
 

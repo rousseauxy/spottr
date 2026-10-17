@@ -127,3 +127,26 @@ func TestIsAdultSubCat(t *testing.T) {
 		}
 	}
 }
+
+// A real withdrawal (free.pt article 4405394, 2026-04-28): Tormentor withdrawing spot
+// <SmUHfKk5wZAPerwaQ9Lp5@spot.net>. Its inline key is 384 bits, which crypto/rsa refuses since
+// Go 1.24; this test fails if verification ever depends on that check again.
+func TestVerifySelfSignedRealWithdrawal(t *testing.T) {
+	subject := "DISPOSE SmUHfKk5wZAPerwaQ9Lp5@spot.net - Suske en Wiske -- nr. 000 - 386 (CBR)"
+	header := "12a01.999.10.1777398896.1.NL.BrWYVZuwDKdDEwXg3aWjxAmhVW6KKFFqvfFDMCNBV39mJIU2NTKJDt8SLcXnZ8IK"
+	sig := "BrWYVZuwDKdDEwXg3aWjxAmhVW6KKFFqvfFDMCNBV39mJIU2NTKJDt8SLcXnZ8IK"
+	key := UnprepareBase64("qSARxcH-pd5OaBQr-szQyRzPtuACCzXr4Z3f38GTWqBV44sup664O0d-s7DPD3pxyB1")
+	msgid := "<SmUHfKk5wZAPerwaQ9Lp5.0.hvq81P9v5wccPTwaQ.GeUK@spot.net>"
+
+	spotter, ok := VerifySelfSigned(subject, header, "Tormentor", sig, key, msgid)
+	if !ok || spotter != "1isD2g" {
+		t.Fatalf("verified=%v spotter=%q, want true and 1isD2g (the owner of the withdrawn spot)", ok, spotter)
+	}
+	// Any change to what was signed must fail.
+	if _, ok := VerifySelfSigned(subject+" ", header, "Tormentor", sig, key, msgid); ok {
+		t.Error("a changed subject still verified")
+	}
+	if _, ok := VerifySelfSigned(subject, header, "Tormentor2", sig, key, msgid); ok {
+		t.Error("a changed poster still verified")
+	}
+}
