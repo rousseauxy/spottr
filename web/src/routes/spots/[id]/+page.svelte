@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { getSpot } from '#lib/api.js';
   import SendToSabDialog from '#lib/SendToSabDialog.svelte';
-  import { getConfig } from '#lib/config.js';
+  import { loadConfig } from '#lib/config.js';
   import { formatSize, formatDate, spotCat, getFormatEmoji, parseSubCatSections, renderBBCode, filterHref, badgeHref } from '#lib/format.js';
 
   let spot = $state(null);
@@ -16,7 +16,7 @@
   let showAdultImage = $state(false);
 
   onMount(async () => {
-    authenticated = getConfig().authenticated ?? true;
+    authenticated = (await loadConfig()).authenticated ?? true;
     try {
       spot = await getSpot(Number(page.params.id));
     } catch (e) {

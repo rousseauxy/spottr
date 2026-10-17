@@ -136,6 +136,7 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 		return nil, false, err
 	}
 
+	kind := db.KindOf(category, subA, subB, subD)
 	spot := &db.Spot{
 		MessageID:  ai.MessageID,
 		ArticleNum: ai.ArticleNum,
@@ -149,11 +150,10 @@ func ParseFromOverview(ai nntp.ArticleInfo) (*db.Spot, bool, error) {
 		SubCatC:    subC,
 		SubCatD:    subD,
 		Size:       filesize,
-		// Resolved once at parse time into an indexable column. The old
-		// `sub_cat_d NOT LIKE '%z3%'` filter ran on every browse query and
-		// could not use an index.
-		IsAdult: IsAdultSubCat(category, subD),
-		Kind:    db.KindOf(category, subD),
+		// Both resolved once at parse time into indexable columns. 18+ is the erotic kind, which
+		// for older spots without a type code is derived from their genres (db.KindOf).
+		Kind:    kind,
+		IsAdult: kind == db.KindErotic,
 	}
 
 	// fields[len-1] is the header signature; the master key is chosen by keyid.
@@ -202,22 +202,6 @@ func plausibleSpotTime(t time.Time) bool {
 		return false
 	}
 	return t.After(spotnetEpoch) && t.Before(time.Now().Add(maxClockSkew))
-}
-
-// IsAdultSubCat reports whether a parsed sub-category D string carries the
-// Spotnet 18+ marker (z3).
-func IsAdultSubCat(category int, subD string) bool {
-	// z3 is "erotic" only in the Image category; in Audio it is the audiobook. Reading it
-	// everywhere hid 3,622 audiobooks as 18+ (measured 2026-10-17).
-	if category != CatImage {
-		return false
-	}
-	for _, part := range strings.Split(subD, "|") {
-		if strings.EqualFold(strings.TrimSpace(part), "z3") {
-			return true
-		}
-	}
-	return false
 }
 
 // parseSubject extracts title and tag from the Spotnet article subject line.

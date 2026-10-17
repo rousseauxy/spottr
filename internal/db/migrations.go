@@ -152,6 +152,28 @@ var migrations = []migration{
 			`UPDATE spots SET is_adult = 0 WHERE category <> 0 AND is_adult = 1`,
 		},
 	},
+	{
+		version: 10,
+		name:    "index the 18+ filter",
+		stmts: []string{
+			// The 18+ tab (kind = erotic) lists only 18+ spots, which idx_spots_kind leaves out
+			// (it is partial on is_adult = 0); 768 k of them.
+			`CREATE INDEX IF NOT EXISTS idx_spots_kind_adult
+			   ON spots(kind, posted_at DESC) WHERE moderated = 0 AND is_adult = 1`,
+		},
+	},
+	{
+		version: 11,
+		name:    "derive the kind of older image spots; 18+ is the erotic kind",
+		stmts: []string{
+			// Older spots carry no type code; their kind is now derived from their other codes
+			// as Spotweb does (erotic genres d23-d26 and d72-d89, series, books), and 18+ is
+			// exactly the erotic kind. Before, old erotic spots were not 18+ and showed in
+			// every listing.
+			`UPDATE spots SET kind = ` + kindCaseSQL + ` WHERE category = 0`,
+			`UPDATE spots SET is_adult = (kind = 5) WHERE category = 0 AND is_adult <> (kind = 5)`,
+		},
+	},
 }
 
 // redecodeEightBitText rewrites every title, tag and poster that is not valid UTF-8, reading the

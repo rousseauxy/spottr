@@ -7,22 +7,22 @@ import (
 	"github.com/spottr/spottr/internal/db"
 )
 
-// 18+ spots show in a listing only when the server allows them AND the viewer asks.
+// 18+ spots show only on the 18+ filter, and only while the server allows them.
 func TestIncludeAdult(t *testing.T) {
 	cases := []struct {
-		allows    bool
-		requested string
-		want      bool
+		allows bool
+		kinds  []int
+		want   bool
 	}{
-		{false, "", false},
-		{false, "1", false}, // asking does not override the server
-		{true, "", false},   // allowed, but hidden until asked for
-		{true, "0", false},
-		{true, "1", true},
+		{true, []int{db.KindErotic}, true},
+		{false, []int{db.KindErotic}, false}, // the filter does not override the server
+		{true, nil, false},                   // All, and any search outside the 18+ filter
+		{true, []int{db.KindMovie}, false},
+		{true, []int{db.KindMovie, db.KindErotic}, false}, // never mixed into another kind
 	}
 	for _, c := range cases {
-		if got := includeAdult(c.allows, c.requested); got != c.want {
-			t.Errorf("includeAdult(%v, %q) = %v, want %v", c.allows, c.requested, got, c.want)
+		if got := includeAdult(c.allows, c.kinds); got != c.want {
+			t.Errorf("includeAdult(%v, %v) = %v, want %v", c.allows, c.kinds, got, c.want)
 		}
 	}
 }

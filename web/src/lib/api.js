@@ -7,7 +7,7 @@ function qs(params) {
 }
 
 /**
- * @param {{ q?: string, cat?: number|null, kind?: string, poster?: string, tag?: string, sub?: string, limit?: number, offset?: number, adult?: boolean, sort?: string }} params
+ * @param {{ q?: string, cat?: number|null, kind?: string, poster?: string, tag?: string, sub?: string, limit?: number, offset?: number, sort?: string }} params
  */
 export async function getSpots(params = {}) {
   const p = {};
@@ -19,7 +19,6 @@ export async function getSpots(params = {}) {
   if (params.sub) p.sub = params.sub;
   if (params.limit) p.limit = params.limit;
   if (params.offset) p.offset = params.offset;
-  if (params.adult) p.adult = '1';
   if (params.sort) p.sort = params.sort;
 
   const res = await fetch('/v1/spots' + qs(p));

@@ -3,7 +3,7 @@
   import { afterNavigate } from '$app/navigation';
   import SendToSabDialog from '#lib/SendToSabDialog.svelte';
   import { getSpots } from '#lib/api.js';
-  import { getConfig } from '#lib/config.js';
+  import { loadConfig } from '#lib/config.js';
   import { formatSize, formatDate, spotCat, getFormatEmoji, FILTERS, subCatItems, badgeHref } from '#lib/format.js';
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,6 @@
   let selectedFilter = $state('all'); // a FILTERS key
   const activeFilter = $derived(FILTERS.find(f => f.key === selectedFilter) ?? FILTERS[0]);
   let page = $state(0);
-  let adult = $state(false);
   // Narrowing that comes from a link on a spot (poster, tag, a badge); each shows as a chip.
   let poster = $state('');
   let tag = $state('');
@@ -36,16 +35,18 @@
     if (tag) params.set('tag', tag);
     if (sub) params.set('sub', sub);
     if (page > 0) params.set('p', String(page));
-    if (adult) params.set('adult', '1');
     const search = params.toString();
     // Preserve SvelteKit's own history.state — replacing with {} wipes its
     // internal navigation state and causes back-button to land on a blank page.
     history.replaceState(history.state, '', search ? '/?' + search : '/');
   }
 
-  onMount(() => {
-    allowAdult = getConfig().allow_adult;
-    authenticated = getConfig().authenticated ?? true;
+  // loadConfig, not getConfig: this runs before the layout's onMount has fetched the config, and
+  // getConfig's defaults (allow_adult false) hid the 18+ tab.
+  onMount(async () => {
+    const cfg = await loadConfig();
+    allowAdult = cfg.allow_adult;
+    authenticated = cfg.authenticated ?? true;
   });
 
   // Read the filters from the URL on the first load AND after every navigation: a link from a
@@ -57,7 +58,6 @@
     const legacyCat = params.get('cat');
     selectedFilter = params.get('f') ?? FILTERS.find(f => f.cat != null && String(f.cat) === legacyCat)?.key ?? 'all';
     page = parseInt(params.get('p') ?? '0');
-    adult = params.get('adult') === '1';
     poster = params.get('poster') ?? '';
     tag = params.get('tag') ?? '';
     sub = params.get('sub') ?? '';
@@ -81,7 +81,6 @@
         sub: sub || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
-        adult: adult || undefined,
       });
       spots = res.spots ?? [];
       total = res.total ?? 0;
@@ -178,19 +177,11 @@
       />
     </div>
 
-    {#if allowAdult}
-      <label class="flex items-center gap-2 text-sm text-slate-400 cursor-pointer self-center">
-        <input type="checkbox" bind:checked={adult}
-               onchange={() => { page = 0; syncURL(); load(); }}
-               class="w-4 h-4 accent-orange-500 rounded-sm" />
-        18+
-      </label>
-    {/if}
   </div>
 
   <!-- Category tabs -->
   <div class="flex gap-1 mb-5 overflow-x-auto pb-1 scrollbar-hide">
-    {#each FILTERS as cat}
+    {#each FILTERS.filter(f => !f.adult || allowAdult) as cat}
       {@const active = selectedFilter === cat.key}
       <button
         data-active-filter={active ? '' : undefined}

@@ -79,6 +79,7 @@ type SearchParams struct {
 	SortBy     string   // "date" (default) | "size" | "relevance"
 	AllowAdult bool     // include 18+ spots; default false
 	Kinds      []int    // KindMovie, KindComic, ... to include (nil = all)
+	AdultOnly  bool     // only 18+ spots (the 18+ filter); says is_adult = 1 so its index is used
 	Tag        string   // exact tag, matched through the full-text index's tag column
 	SubCodes   []string // Spotnet subcategory codes that must all be present: "a5", "c2", "d31", "z2"
 }
@@ -194,7 +195,7 @@ func (db *DB) InsertSpots(ctx context.Context, spots []Spot) (int, error) {
 			s.PostedAt.Unix(), s.Tag, s.NzbID,
 			s.Category, s.SubCatA, s.SubCatB, s.SubCatC, s.SubCatD,
 			s.Size, s.ImageURL, boolInt(s.Verified), boolInt(s.Moderated),
-			boolInt(s.IsAdult), s.SpotterID, KindOf(s.Category, s.SubCatD),
+			boolInt(s.IsAdult), s.SpotterID, KindOf(s.Category, s.SubCatA, s.SubCatB, s.SubCatD),
 			s.MessageID,
 		)
 		if err != nil {
@@ -275,7 +276,9 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 		args = append(args, p.Before.Unix())
 	}
 	where = append(where, "s.moderated = 0")
-	if !p.AllowAdult {
+	if p.AdultOnly {
+		where = append(where, "s.is_adult = 1")
+	} else if !p.AllowAdult {
 		// Indexed equality against the partial index, replacing the old
 		// `sub_cat_d NOT LIKE '%z3%'` full scan.
 		where = append(where, "s.is_adult = 0")

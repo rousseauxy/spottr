@@ -340,11 +340,12 @@ func (h *Handler) clampPaging(limit, offset int) (int, int) {
 	return limit, offset
 }
 
-// includeAdult decides whether a listing shows 18+ spots: only when the server allows them
-// (ALLOW_ADULT) AND the viewer asked for them (the 18+ box, adult=1). Until 2026-10-17 an allowing
-// server showed them in every listing by default, and the box did nothing.
-func includeAdult(serverAllows bool, requested string) bool {
-	return serverAllows && requested == "1"
+// includeAdult decides whether a listing shows 18+ spots: only on the 18+ filter (kind=erotic, and
+// nothing else asked for alongside it) while the server allows 18+ spots (ALLOW_ADULT). Every
+// other listing and search leaves them out, also with ALLOW_ADULT on. Until 2026-10-17 an allowing
+// server showed them everywhere; 0.6.1 needed a checkbox; the owner wants them only on their tab.
+func includeAdult(serverAllows bool, kinds []int) bool {
+	return serverAllows && len(kinds) == 1 && kinds[0] == db.KindErotic
 }
 
 // hiddenAdult reports whether a spot must not be served at all: 18+ while the server does not
@@ -356,16 +357,13 @@ func (h *Handler) hiddenAdult(spot *db.Spot) bool {
 func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	allowAdult := includeAdult(h.cfg.AllowAdult, q.Get("adult"))
-
 	limit, offset := h.clampPaging(parseIntOr(q.Get("limit"), 25), parseIntOr(q.Get("offset"), 0))
 
 	params := db.SearchParams{
-		Query:      q.Get("q"),
-		Poster:     q.Get("poster"),
-		Limit:      limit,
-		Offset:     offset,
-		AllowAdult: allowAdult,
+		Query:  q.Get("q"),
+		Poster: q.Get("poster"),
+		Limit:  limit,
+		Offset: offset,
 	}
 	// Keyset pagination: `before` is a unix timestamp and lets a client page
 	// deeply without paying for a growing OFFSET.
@@ -396,6 +394,8 @@ func (h *Handler) listSpots(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	params.AllowAdult = includeAdult(h.cfg.AllowAdult, params.Kinds)
+	params.AdultOnly = params.AllowAdult
 	if sort := q.Get("sort"); sort != "" {
 		params.SortBy = sort
 	}

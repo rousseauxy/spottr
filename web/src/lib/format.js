@@ -63,6 +63,8 @@ export const FILTERS = [
   { key: 'audio', label: 'Audio', emoji: '🎵', cat: 1 },
   { key: 'game', label: 'Games', emoji: '🎮', cat: 2 },
   { key: 'app', label: 'Apps', emoji: '💿', cat: 3 },
+  // Shown only when the server allows 18+ spots (ALLOW_ADULT); the only place they ever appear.
+  { key: 'erotic', label: '18+', emoji: '🔞', kind: 'erotic', adult: true },
 ];
 
 // Icon overrides keyed by [category][format/platform index from SubCatA]
@@ -187,7 +189,7 @@ export function subCatItems(str, cat, slot) {
 
 /** The FILTERS key a spot belongs to ('all' for older Image spots without a type code). */
 export function filterKeyFor(spot) {
-  if (spot.Category === 0) return { 1: 'movie', 2: 'series', 3: 'book', 4: 'comic' }[spot.Kind] ?? 'all';
+  if (spot.Category === 0) return { 1: 'movie', 2: 'series', 3: 'book', 4: 'comic', 5: 'erotic' }[spot.Kind] ?? 'all';
   return FILTERS.find(f => f.cat === spot.Category)?.key ?? 'all';
 }
 

@@ -111,27 +111,6 @@ func TestVerifyFullSpotRequiresKeyAndSignature(t *testing.T) {
 	}
 }
 
-func TestIsAdultSubCat(t *testing.T) {
-	cases := map[string]bool{
-		"z3|":    true,
-		"d1|z3|": true,
-		"Z3|":    true,
-		"d1|d2|": false,
-		"":       false,
-		"z30|":   false, // must not match as a substring
-		"z1|z2|": false,
-	}
-	for in, want := range cases {
-		if got := IsAdultSubCat(CatImage, in); got != want {
-			t.Errorf("IsAdultSubCat(image, %q) = %v, want %v", in, got, want)
-		}
-	}
-	// In Audio z3 is the audiobook, never 18+.
-	if IsAdultSubCat(CatAudio, "z3|") {
-		t.Error("an audiobook was flagged 18+")
-	}
-}
-
 // A real withdrawal (free.pt article 4405394, 2026-04-28): Tormentor withdrawing spot
 // <SmUHfKk5wZAPerwaQ9Lp5@spot.net>. Its inline key is 384 bits, which crypto/rsa refuses since
 // Go 1.24; this test fails if verification ever depends on that check again.
