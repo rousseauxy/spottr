@@ -20,9 +20,11 @@ COPY . .
 # Copy the compiled frontend into the Go embed target
 COPY --from=frontend /web/dist ./internal/webstatic/dist
 
+# The release version, from the tag (the image build passes it); "dev" otherwise.
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/spottr/spottr/internal/api.Version=${VERSION}" \
     -o /spottr \
     ./cmd/spottr
 

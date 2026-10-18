@@ -40,6 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer database.Close()
+	log.Info("spottr starting", "version", api.Version)
 	log.Info("database opened", "path", cfg.DBPath, "max_conns", dbConns)
 
 	// Newznab API key: persisted, so it is stable across restarts and

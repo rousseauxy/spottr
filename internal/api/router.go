@@ -28,9 +28,10 @@ import (
 	"github.com/spottr/spottr/internal/spotnet"
 )
 
-// Version is reported by /_/config and the newznab caps document. Keep it in
-// step with the release tag.
-const Version = "0.2.0"
+// Version is reported by /_/config, the newznab caps document and the startup log. The image
+// build sets it from the release tag (-ldflags -X, see the Dockerfile); it was a constant kept
+// "in step with the release tag" by hand and said 0.2.0 on 0.7.0. "dev" for any other build.
+var Version = "dev"
 
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
