@@ -3,12 +3,21 @@
 A clean-room Go + SvelteKit rewrite of the Spotnet/Spotweb Usenet spot indexer.
 Single binary, SQLite database, built-in Newznab-compatible API for Prowlarr/Sonarr/Radarr.
 
+Documentation: [docs.xact.cloud/spottr](https://docs.xact.cloud/spottr/index.html) (running in production,
+Prowlarr/Sonarr/Radarr, sign-in behind Authentik, what to open in a firewall).
+
 ## Features
 
-- **Browse & search** spots across all categories (Video, Audio, Apps, Games, Books, ...) with SQLite FTS5
+- **Browse & search** with SQLite FTS5, filtered by kind: Movies, Series, Books, Comics, Audio, Games, Apps
+  (older spots without a type code get one derived from their other codes, as Spotweb does)
+- **Links everywhere** — a spot's kind, poster, tag and each badge open the list filtered by it
 - **Format-aware icons** — Blu-ray, UHD, FLAC, DTS, Linux/Windows/Mac, and more
-- **Newznab API** — plug straight into Prowlarr, Sonarr, Radarr (API-key protected)
-- **SABnzbd integration** — Spottr fetches the NZB and uploads it to your queue
+- **Newznab API** — plug straight into Prowlarr, Sonarr, Radarr (API-key protected), categories by kind
+- **SABnzbd integration** — Spottr fetches the NZB and uploads it, with one of SABnzbd's categories and the
+  archive password (filled in when the poster wrote it in the description)
+- **Withdrawals honoured** — a poster's own (signed, within 5 days) and the network moderator's, also for
+  the history, as Spotweb does
+- **18+ only on its own tab**, and only when `ALLOW_ADULT` is on
 - **Full history backfill** — walk a group back to its first article, resuming across restarts
 - **Signature verification** — RSA spot signatures and spotter identities, Spotnet-compatible
 - **Spotter blacklist** — drop known-bad posters from an external feed
@@ -51,8 +60,8 @@ All configuration is via environment variables (or a `.env` file).
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `NNTP_HOST` | **yes** | — | Usenet server hostname |
-| `NNTP_PORT` | no | `563` | NNTP port |
-| `NNTP_TLS` | no | `true` | Enable TLS |
+| `NNTP_PORT` | no | `119` | NNTP port (`563` for TLS, as most providers want) |
+| `NNTP_TLS` | no | `false` | Enable TLS |
 | `NNTP_USER` | no | — | NNTP username |
 | `NNTP_PASS` | no | — | NNTP password |
 | `NNTP_MAX_CONNS` | no | `4` | **Hard ceiling** on concurrent upstream connections |
@@ -78,7 +87,8 @@ restarts) and paces itself, since it shares the NNTP pool with live traffic.
 | `APP_PASSWORD` | if `password` | — | Password for the built-in login |
 | `SESSION_DURATION` | no | `24h` | Session cookie lifetime |
 | `SECURE_COOKIE` | no | `false` | Set the `Secure` flag (enable behind HTTPS) |
-| `TRUSTED_PROXIES` | no | — | CIDRs allowed to set `X-Forwarded-For` / `X-Real-Ip` |
+| `TRUSTED_PROXIES` | no | — | CIDRs allowed to set `X-Forwarded-For` / `X-Real-Ip` / `X-Forwarded-Proto` and the proxy sign-in header |
+| `PROXY_AUTH_HEADER` | no | `X-authentik-username` | With `proxy`: the header the proxy sets for a signed-in user; lets that user download NZBs |
 
 Spottr **refuses to start** in `password` mode without `APP_PASSWORD`. Running
 without in-app auth is a deliberate choice, not an accident:
@@ -89,7 +99,9 @@ without in-app auth is a deliberate choice, not an accident:
 
 `TRUSTED_PROXIES` matters: forwarding headers are honoured **only** from listed
 peers. Otherwise the socket peer wins, because the login lockout and rate
-limiter key on client IP and a forgeable header would bypass both.
+limiter key on client IP and a forgeable header would bypass both. List the
+address the proxy's requests **arrive from** (a VPN or router that rewrites the
+source changes it), never a whole network your clients are on.
 
 ### Newznab API
 
@@ -127,7 +139,7 @@ container memory limit.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ALLOW_ADULT` | no | `false` | Show 18+ categories |
+| `ALLOW_ADULT` | no | `false` | Allow 18+ spots: on their own tab only, never in All, other filters or searches |
 | `BLACKLIST_URL` | no | — | External spotter blacklist feed (XML) |
 | `WHITELIST_URL` | no | — | External spotter whitelist feed (XML) |
 | `VERIFY_SIGNATURES` | no | `false` | Drop spots whose header signature fails |
@@ -139,7 +151,9 @@ unsigned by design and would all be discarded.
 `MODERATION_MODE` handles Spotnet withdrawal ("DISPOSE") messages. These are
 control messages and are **always** kept out of the index; this setting only
 decides whether the spot they target is withdrawn. Start with `mark`
-(reversible) before considering `delete`. See [Moderation](#moderation).
+(reversible) before considering `delete`. With either, the first start also
+applies the withdrawals of the past once (the withdrawal sweep). See
+[Moderation](#moderation).
 
 ### Misc
 
@@ -157,11 +171,12 @@ See [.env.example](.env.example) for a commented template.
 |---|---|---|
 | `/healthz` | none | Liveness probe |
 | `/readyz` | none | Readiness (checks the database) |
-| `/api?t=…` | API key | Newznab (`caps`, `search`) |
-| `/v1/spots`, `/v1/spots/{id}` | none | Browse and search |
-| `/v1/spots/{id}/nzb` | none | Download an NZB |
+| `/api?t=…` | API key | Newznab (`caps`, `search`, `tvsearch`, `movie`) |
+| `/v1/spots`, `/v1/spots/{id}` | none | Browse and search (`kind=`, `poster=`, `tag=`, `sub=`) |
+| `/v1/spots/{id}/nzb` | API key or signed in | Download an NZB |
 | `/v1/spots/{id}/image` | none | Spot image |
-| `/v1/spots/{id}/send-to-sab` | session | Push an NZB to SABnzbd |
+| `/v1/spots/{id}/send-to-sab` | session | Push an NZB to SABnzbd (name, category, password) |
+| `/v1/sab/categories` | session | SABnzbd's categories |
 | `/v1/queue` | session | SABnzbd queue |
 | `/v1/metrics` | session | Prometheus metrics |
 
@@ -171,32 +186,50 @@ for a growing `OFFSET`.
 
 ## Moderation
 
-Spotnet withdrawals are **self-signed**: the article carries the poster's own
-public key and a hashcash proof-of-work. A valid signature therefore proves only
-that someone holds that keypair — and anyone can generate one.
+Two kinds of withdrawal are honoured, as in Spotweb.
 
-Spottr honours a withdrawal only when **all** of these hold:
+**A poster's own** is **self-signed**: the article carries the poster's own
+public key and a hashcash proof-of-work. A valid signature therefore proves only
+that someone holds that keypair — and anyone can generate one. It is honoured
+only when **all** of these hold:
 
 1. the signature verifies against the key in the article, and the hashcash checks out;
 2. the resulting spotter ID matches the spotter ID of the targeted spot; and
 3. the request arrives within 5 days of the spot.
 
-Ownership is only known for spots that have been enriched, so an unknown owner
-means the withdrawal is skipped. Failing closed costs an un-applied withdrawal;
-failing open would let a stranger delete arbitrary spots.
+A spot's owner is in its full headers (`X-User-Key`), which the overview does
+not carry; when a withdrawal arrives for a spot whose owner is unknown, Spottr
+reads that spot's headers once and stores the owner.
+
+**The network moderator's** carries no key of its own and is signed with
+Spotnet's moderator master key (keyid 2); verified, it applies to any spot.
+
+A personal withdrawal whose signature fails is never applied. (Spotweb treats it
+as a moderator command, so a hashcash alone would remove any spot.)
+
+Spotnet's self-signed keys are 384-bit RSA, which Go's `crypto/rsa` refuses
+since Go 1.24; Spottr verifies PKCS#1 v1.5 itself, with a regression test on a
+real withdrawal.
 
 ## Newznab / Prowlarr
 
-Add Spottr as a custom Newznab indexer in Prowlarr:
+Add Spottr as a Generic Newznab indexer in Prowlarr, on its **direct** address
+(not through a signing-in proxy, which Prowlarr cannot get through):
 
 | Field | Value |
 |---|---|
 | URL | `http://spottr:8080` |
+| API Path | `/api` |
 | API Key | value from `docker compose logs spottr \| grep "API key"` |
 
-`tv-search` and `movie-search` are advertised as unavailable — Spottr indexes
-Spotnet categories, not TVDB/IMDB identifiers, so plain `search` is the
-supported mode.
+Categories by kind: 2000 movies, 5000 series, 7000 books and comics (7020, 7030),
+3000 audio, 1000/4000 games and software; several combine. 18+ (6000) only when
+asked for on its own and `ALLOW_ADULT` is on. `tvsearch` and `movie` are answered
+as a title search (no TVDB/IMDB identifiers).
+
+The NZB links in the results carry the API key and use the scheme the client
+used, so Prowlarr, Sonarr and SABnzbd can fetch them. More:
+[Prowlarr, Sonarr and Radarr](https://docs.xact.cloud/spottr/newznab.html).
 
 ## Deployment notes
 
