@@ -70,6 +70,10 @@ type Config struct {
 	AppPassword     string // APP_PASSWORD — required when AuthMode == password
 	SessionDuration time.Duration
 	SecureCookie    bool // SECURE_COOKIE — set the Secure flag on session cookies
+	// ProxyAuthHeader is the header an authenticating proxy sets on a request it let through
+	// (Authentik's forward auth: X-authentik-username). With AUTH_MODE=proxy it is believed only
+	// from a peer in TRUSTED_PROXIES; it opens the NZB download route to signed-in browsers.
+	ProxyAuthHeader string
 	AllowAdult      bool // ALLOW_ADULT — show 18+ spots (default: false)
 
 	// API
@@ -123,6 +127,7 @@ func Load() (*Config, error) {
 		AppPassword:     envOr("APP_PASSWORD", ""),
 		SessionDuration: envDuration("SESSION_DURATION", 24*time.Hour),
 		SecureCookie:    envBool("SECURE_COOKIE", false),
+		ProxyAuthHeader: envOr("PROXY_AUTH_HEADER", "X-authentik-username"),
 		AllowAdult:      envBool("ALLOW_ADULT", false),
 
 		APIKey: envOr("API_KEY", ""),

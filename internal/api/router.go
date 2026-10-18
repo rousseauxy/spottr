@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -110,7 +111,9 @@ func (h *Handler) Router() http.Handler {
 		// Browse endpoints (public — read-only)
 		r.Get("/spots", h.listSpots)
 		r.Get("/spots/{id}", h.getSpot)
-		r.Get("/spots/{id}/nzb", h.downloadNZB)
+		// An NZB is what a download client needs; not open to anything that can reach the
+		// port. See nzbAccess.
+		r.With(h.nzbAccess).Get("/spots/{id}/nzb", h.downloadNZB)
 		r.Get("/spots/{id}/image", h.getImage)
 		r.Get("/categories", h.listCategories)
 
@@ -282,7 +285,9 @@ func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 
 	baseURL := requestScheme(r) + "://" + r.Host
 	for _, s := range spots {
-		nzbURL := fmt.Sprintf("%s/v1/spots/%d/nzb", baseURL, s.ID)
+		// The link carries the API key: Prowlarr, Sonarr and SABnzbd fetch it without a
+		// session, and the NZB route requires one or the other (nzbAccess).
+		nzbURL := fmt.Sprintf("%s/v1/spots/%d/nzb?apikey=%s", baseURL, s.ID, url.QueryEscape(h.apiKey))
 		item := NewznabItem{
 			Title:   s.Title,
 			GUID:    s.MessageID,
@@ -859,6 +864,50 @@ func (h *Handler) appConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// validAPIKey reports whether the request carries the API key, as ?apikey= (what Prowlarr and
+// friends send) or an X-Api-Key header. Compared in constant time; no key configured is no match.
+func (h *Handler) validAPIKey(r *http.Request) bool {
+	provided := r.URL.Query().Get("apikey")
+	if provided == "" {
+		provided = r.Header.Get("X-Api-Key")
+	}
+	return h.apiKey != "" && auth.CheckPassword(provided, h.apiKey)
+}
+
+// nzbAccess gates the NZB download route. Until 2026-10-18 it was open to anything that could
+// reach the port: behind Authentik that was the proxy, but on the LAN address it was everyone on
+// the network. Allowed now:
+//
+//   - the API key (the links in Newznab results carry it: Prowlarr, Sonarr, SABnzbd);
+//   - AUTH_MODE=password: a signed-in session;
+//   - AUTH_MODE=proxy: a request from a trusted proxy that carries PROXY_AUTH_HEADER, which the
+//     proxy sets once it has signed the user in (Authentik's forward auth sets
+//     X-authentik-username and overwrites whatever the client sent);
+//   - AUTH_MODE=open: anyone, as the operator chose.
+func (h *Handler) nzbAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.validAPIKey(r) || h.signedIn(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		metricAuthFailures.Add(1)
+		jsonError(w, "unauthorized: sign in, or pass the API key", http.StatusUnauthorized)
+	})
+}
+
+// signedIn reports whether the request belongs to a signed-in user, by AUTH_MODE.
+func (h *Handler) signedIn(r *http.Request) bool {
+	switch h.cfg.AuthMode {
+	case config.AuthModeOpen:
+		return true
+	case config.AuthModeProxy:
+		return h.cfg.ProxyAuthHeader != "" && fromTrustedProxy(r) &&
+			strings.TrimSpace(r.Header.Get(h.cfg.ProxyAuthHeader)) != ""
+	default:
+		return h.sessions.Valid(auth.TokenFromRequest(r))
+	}
+}
+
 // requireAPIKey gates the newznab API. Accepts ?apikey= (what Prowlarr and
 // friends send) or an X-Api-Key header.
 //
@@ -867,11 +916,7 @@ func (h *Handler) appConfig(w http.ResponseWriter, r *http.Request) {
 // happened to be configured, and was never mounted on the router at all.
 func (h *Handler) requireAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := r.URL.Query().Get("apikey")
-		if provided == "" {
-			provided = r.Header.Get("X-Api-Key")
-		}
-		if h.apiKey == "" || !auth.CheckPassword(provided, h.apiKey) {
+		if !h.validAPIKey(r) {
 			metricAuthFailures.Add(1)
 			// Newznab clients expect an XML error document, not JSON.
 			w.WriteHeader(http.StatusUnauthorized)

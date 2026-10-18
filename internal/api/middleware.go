@@ -26,16 +26,34 @@ import (
 func realIP(trusted []netip.Prefix) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			scheme := resolveScheme(r, trusted)
+			info := peerInfo{scheme: resolveScheme(r, trusted), fromTrustedProxy: peerTrusted(r, trusted)}
 			if ip := resolveClientIP(r, trusted); ip != "" {
 				r.RemoteAddr = ip
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), schemeKey{}, scheme)))
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, info)))
 		})
 	}
 }
 
-type schemeKey struct{}
+type peerKey struct{}
+
+// peerInfo is what realIP knew about the immediate peer before replacing RemoteAddr.
+type peerInfo struct {
+	scheme           string
+	fromTrustedProxy bool
+}
+
+// peerTrusted reports whether the immediate peer is in TRUSTED_PROXIES.
+func peerTrusted(r *http.Request, trusted []netip.Prefix) bool {
+	peer, err := netip.ParseAddr(hostOnly(r.RemoteAddr))
+	return err == nil && len(trusted) > 0 && inAny(peer, trusted)
+}
+
+// fromTrustedProxy reports whether this request reached spottr through a trusted proxy.
+func fromTrustedProxy(r *http.Request) bool {
+	info, _ := r.Context().Value(peerKey{}).(peerInfo)
+	return info.fromTrustedProxy
+}
 
 // resolveScheme is the scheme the client used: X-Forwarded-Proto from a trusted proxy, else
 // whether this connection is TLS. Absolute links (the NZB links in Newznab results) are built
@@ -56,8 +74,8 @@ func resolveScheme(r *http.Request, trusted []netip.Prefix) string {
 
 // requestScheme returns the scheme realIP recorded for this request.
 func requestScheme(r *http.Request) string {
-	if s, ok := r.Context().Value(schemeKey{}).(string); ok {
-		return s
+	if info, ok := r.Context().Value(peerKey{}).(peerInfo); ok && info.scheme != "" {
+		return info.scheme
 	}
 	if r.TLS != nil {
 		return "https"
