@@ -76,12 +76,19 @@ type SearchParams struct {
 	// Before implements keyset pagination: return only spots posted strictly
 	// before this instant. Far cheaper than a large OFFSET.
 	Before     time.Time
-	SortBy     string   // "date" (default) | "size" | "relevance"
-	AllowAdult bool     // include 18+ spots; default false
-	Kinds      []int    // KindMovie, KindComic, ... to include (nil = all)
-	AdultOnly  bool     // only 18+ spots (the 18+ filter); says is_adult = 1 so its index is used
-	Tag        string   // exact tag, matched through the full-text index's tag column
-	SubCodes   []string // Spotnet subcategory codes that must all be present: "a5", "c2", "d31", "z2"
+	SortBy     string    // "date" (default) | "size" | "relevance"
+	AllowAdult bool      // include 18+ spots; default false
+	Kinds      []int     // KindMovie, KindComic, ... to include (nil = all)
+	AdultOnly  bool      // only 18+ spots (the 18+ filter); says is_adult = 1 so its index is used
+	AnyOf      []CatKind // Newznab: spots matching ANY of these (category, kind) pairs
+	Tag        string    // exact tag, matched through the full-text index's tag column
+	SubCodes   []string  // Spotnet subcategory codes that must all be present: "a5", "c2", "d31", "z2"
+}
+
+// CatKind is one (main category, kind) pair; Kind -1 means any kind of that category.
+type CatKind struct {
+	Category int
+	Kind     int
 }
 
 // subCodeColumn maps a subcategory code's letter to its column; z codes live in sub_cat_d.
@@ -248,6 +255,19 @@ func (db *DB) SearchSpots(ctx context.Context, p SearchParams) ([]Spot, int, err
 		// Codes are stored as "a5|c2|"; "|" before and after makes "d3" not match "d31".
 		where = append(where, fmt.Sprintf("instr('|' || %s, ?) > 0", subCodeColumn[code[0]]))
 		args = append(args, "|"+code+"|")
+	}
+	if len(p.AnyOf) > 0 {
+		var ors []string
+		for _, ck := range p.AnyOf {
+			if ck.Kind < 0 {
+				ors = append(ors, "s.category = ?")
+				args = append(args, ck.Category)
+			} else {
+				ors = append(ors, "(s.category = ? AND s.kind = ?)")
+				args = append(args, ck.Category, ck.Kind)
+			}
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
 	}
 	if len(p.Kinds) > 0 {
 		where = append(where, inOrEqual("s.kind", len(p.Kinds)))

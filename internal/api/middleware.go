@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -19,15 +20,49 @@ import (
 // attacker could rotate a forged header per request and never trip the
 // 5-attempt limit. The same forgery poisons rate limiting and access logs. Here
 // the headers are honoured only when the immediate peer is in TRUSTED_PROXIES.
+//
+// It also records the scheme the client used (see requestScheme), decided here because the
+// original peer is gone once RemoteAddr is replaced.
 func realIP(trusted []netip.Prefix) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scheme := resolveScheme(r, trusted)
 			if ip := resolveClientIP(r, trusted); ip != "" {
 				r.RemoteAddr = ip
 			}
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), schemeKey{}, scheme)))
 		})
 	}
+}
+
+type schemeKey struct{}
+
+// resolveScheme is the scheme the client used: X-Forwarded-Proto from a trusted proxy, else
+// whether this connection is TLS. Absolute links (the NZB links in Newznab results) are built
+// from it; they were always https://, which broke every download for a client on the plain-HTTP
+// LAN address.
+func resolveScheme(r *http.Request, trusted []netip.Prefix) string {
+	if peer, err := netip.ParseAddr(hostOnly(r.RemoteAddr)); err == nil && len(trusted) > 0 && inAny(peer, trusted) {
+		switch p := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))); p {
+		case "http", "https":
+			return p
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// requestScheme returns the scheme realIP recorded for this request.
+func requestScheme(r *http.Request) string {
+	if s, ok := r.Context().Value(schemeKey{}).(string); ok {
+		return s
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func resolveClientIP(r *http.Request, trusted []netip.Prefix) string {

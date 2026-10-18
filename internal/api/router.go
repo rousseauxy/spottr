@@ -231,17 +231,22 @@ func (h *Handler) newznabCaps(w http.ResponseWriter, r *http.Request) {
   <registration available="no" open="no"/>
   <searching>
     <search available="yes" supportedParams="q,cat"/>
-    <tv-search available="no"/>
-    <movie-search available="no"/>
+    <tv-search available="yes" supportedParams="q"/>
+    <movie-search available="yes" supportedParams="q"/>
   </searching>
   <categories>
     <category id="1000" name="Console"/>
-    <category id="2000" name="Movie"/>
-    <category id="3000" name="Audio"/>
+    <category id="2000" name="Movies"/>
+    <category id="3000" name="Audio">
+      <subcat id="3030" name="Audiobook"/>
+    </category>
     <category id="4000" name="PC"/>
     <category id="5000" name="TV"/>
-    <category id="7000" name="Books"/>
-    <category id="8000" name="Other"/>
+    <category id="6000" name="XXX"/>
+    <category id="7000" name="Books">
+      <subcat id="7020" name="Ebook"/>
+      <subcat id="7030" name="Comics"/>
+    </category>
   </categories>
 </caps>`
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
@@ -256,25 +261,12 @@ func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 		limit = 100 // newznab advertises max="100" in caps
 	}
 	params := db.SearchParams{
-		Query:      q.Get("q"),
-		Limit:      limit,
-		Offset:     offset,
-		AllowAdult: h.cfg.AllowAdult,
+		Query:  q.Get("q"),
+		Limit:  limit,
+		Offset: offset,
 	}
-
-	// Map Newznab category IDs to internal categories
-	if catStr := q.Get("cat"); catStr != "" {
-		for _, c := range strings.Split(catStr, ",") {
-			switch {
-			case strings.HasPrefix(c, "2"):
-				params.Categories = append(params.Categories, spotnet.CatImage)
-			case strings.HasPrefix(c, "3"):
-				params.Categories = append(params.Categories, spotnet.CatAudio)
-			case strings.HasPrefix(c, "1"), strings.HasPrefix(c, "4"):
-				params.Categories = append(params.Categories, spotnet.CatGame, spotnet.CatApp)
-			}
-		}
-	}
+	params.AnyOf, params.AdultOnly = newznabFilter(q.Get("cat"), h.cfg.AllowAdult)
+	params.AllowAdult = params.AdultOnly
 
 	spots, total, err := h.db.SearchSpots(r.Context(), params)
 	if err != nil {
@@ -288,7 +280,7 @@ func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 		Response:    NNResponse{Offset: params.Offset, Total: total},
 	}
 
-	baseURL := "https://" + r.Host
+	baseURL := requestScheme(r) + "://" + r.Host
 	for _, s := range spots {
 		nzbURL := fmt.Sprintf("%s/v1/spots/%d/nzb", baseURL, s.ID)
 		item := NewznabItem{
@@ -301,7 +293,7 @@ func (h *Handler) newznabSearch(w http.ResponseWriter, r *http.Request) {
 				Type:   "application/x-nzb",
 			},
 			Attributes: []NNAttr{
-				{Name: "category", Value: newznabCatID(s.Category)},
+				{Name: "category", Value: newznabCatID(s)},
 				{Name: "size", Value: strconv.FormatInt(s.Size, 10)},
 				{Name: "poster", Value: s.Poster},
 				{Name: "usenetdate", Value: s.PostedAt.Format(time.RFC1123Z)},
@@ -915,9 +907,68 @@ func parseIntOr(s string, def int) int {
 	return def
 }
 
-func newznabCatID(cat int) string {
-	switch cat {
+// newznabFilter turns a Newznab cat= list into the spots to search. Image spots are split by
+// kind, so a TV search (5000) gets series and not films, books and everything else, as it did
+// when all of Image was 2000. 18+ spots (6000) are included only when 6000 is all that is asked
+// for and the server allows them: the same rule as the web list, where they appear only on their
+// own tab. No cat at all searches everything except 18+.
+func newznabFilter(cat string, allowAdult bool) (anyOf []db.CatKind, adultOnly bool) {
+	img := func(kind int) db.CatKind { return db.CatKind{Category: spotnet.CatImage, Kind: kind} }
+	any := func(category int) db.CatKind { return db.CatKind{Category: category, Kind: -1} }
+	adultAsked, otherAsked := false, false
+	for _, c := range strings.Split(cat, ",") {
+		c = strings.TrimSpace(c)
+		switch {
+		case c == "":
+			continue
+		case c == "7030":
+			anyOf = append(anyOf, img(db.KindComic))
+		case c == "7020":
+			anyOf = append(anyOf, img(db.KindBook))
+		case strings.HasPrefix(c, "7"):
+			anyOf = append(anyOf, img(db.KindBook), img(db.KindComic))
+		case strings.HasPrefix(c, "2"):
+			anyOf = append(anyOf, img(db.KindMovie))
+		case strings.HasPrefix(c, "5"):
+			anyOf = append(anyOf, img(db.KindSeries))
+		case strings.HasPrefix(c, "3"):
+			anyOf = append(anyOf, any(spotnet.CatAudio))
+		case strings.HasPrefix(c, "1"):
+			anyOf = append(anyOf, any(spotnet.CatGame))
+		case strings.HasPrefix(c, "4"):
+			anyOf = append(anyOf, any(spotnet.CatGame), any(spotnet.CatApp))
+		case strings.HasPrefix(c, "6"):
+			adultAsked = true
+			continue
+		default:
+			continue
+		}
+		otherAsked = true
+	}
+	if adultAsked && !otherAsked {
+		if !allowAdult {
+			// Nothing may match: 18+ is off, and nothing else was asked for.
+			return []db.CatKind{{Category: -1, Kind: -1}}, false
+		}
+		return []db.CatKind{img(db.KindErotic)}, true
+	}
+	return anyOf, false
+}
+
+// newznabCatID is a spot's Newznab category: by kind for Image spots.
+func newznabCatID(s db.Spot) string {
+	switch s.Category {
 	case spotnet.CatImage:
+		switch s.Kind {
+		case db.KindSeries:
+			return "5000"
+		case db.KindBook:
+			return "7020"
+		case db.KindComic:
+			return "7030"
+		case db.KindErotic:
+			return "6000"
+		}
 		return "2000"
 	case spotnet.CatAudio:
 		return "3000"

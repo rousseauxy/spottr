@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"testing"
 )
@@ -106,6 +107,33 @@ func TestHostOnly(t *testing.T) {
 	for in, want := range cases {
 		if got := hostOnly(in); got != want {
 			t.Errorf("hostOnly(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The NZB links in Newznab results use the scheme the client used. A forwarded scheme is
+// believed only from a trusted proxy.
+func TestResolveScheme(t *testing.T) {
+	trusted := []netip.Prefix{netip.MustParsePrefix("192.168.10.0/24")}
+	req := func(peer, proto string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api?t=search", nil)
+		r.RemoteAddr = peer + ":40000"
+		if proto != "" {
+			r.Header.Set("X-Forwarded-Proto", proto)
+		}
+		return r
+	}
+	cases := []struct {
+		peer, proto, want string
+	}{
+		{"192.168.10.5", "", "http"},       // Prowlarr on the LAN address, plain HTTP
+		{"192.168.10.5", "https", "https"}, // behind the trusted proxy
+		{"203.0.113.9", "https", "http"},   // a forged header from anyone else
+		{"192.168.10.5", "gopher", "http"}, // nonsense is ignored
+	}
+	for _, c := range cases {
+		if got := resolveScheme(req(c.peer, c.proto), trusted); got != c.want {
+			t.Errorf("resolveScheme(%s, %q) = %s, want %s", c.peer, c.proto, got, c.want)
 		}
 	}
 }
