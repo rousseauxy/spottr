@@ -59,7 +59,8 @@ jobs:
           # the image had been pushed (v0.3.1). The build takes about a minute and a half without it.
 
       # Starts Renovate, so the compose repositories pick up this image at once instead of at its next scheduled
-      # run (tools/ci/start-renovate.sh; never fails the job).
+      # run (tools/ci/start-renovate.sh; never fails the job). It first waits until the registry lists the new
+      # tag: Renovate started seconds after the push missed it in 2 of 5 releases (backlog B-7).
       - name: Start Renovate
         if: github.event_name != 'pull_request'
-        run: sh tools/ci/start-renovate.sh
+        run: sh tools/ci/start-renovate.sh "ghcr.io/rousseauxy/spottr:${{ steps.meta.outputs.version }}"
