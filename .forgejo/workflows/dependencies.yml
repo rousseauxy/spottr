@@ -6,9 +6,13 @@ name: Dependencies
 #              scanned by osv-scanner: Alpine's packages and the Go standard library in the binary
 #   the source go.mod and web/package-lock.json
 #
-# A finding with a fix available fails the run; GitHub sends a failed scheduled run by mail. On
-# Mondays, or by hand, what has no fix yet is counted as well. tools/ci is shared with sibling
-# projects and kept identical to theirs.
+# A finding with a fix available fails the run and goes to the alert room as "firing". On Mondays,
+# or by hand, what has no fix yet is counted as well, as a notice. tools/ci is shared with sibling
+# projects and kept identical to theirs; TaricHive's copy is the one to change.
+#
+# This file lived in .github/workflows until 2026-10-20 and never ran: the forge reads only
+# .forgejo/workflows when that directory exists. The relay's token is read from SecretHive with the
+# job's own forge token (tools/ci/relay-token.sh, group ci-forge); nothing is stored on the forge.
 on:
   schedule:
     - cron: '57 4 * * *'
@@ -19,11 +23,15 @@ permissions:
 
 env:
   PROJECT: Spottr
+  ALERT_RELAY_URL: https://alerts.xact.cloud/grafana
+  RELAY_SECRET: ci-forge/alert-relay-token
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   OSV_SCANNER_VERSION: v2.7.0
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+    enable-openid-connect: true
     steps:
       - uses: actions/checkout@v4
       - name: Install osv-scanner
@@ -42,6 +50,8 @@ jobs:
           # Exit code 1 means "vulnerabilities found", which the report weighs.
           ./osv-scanner scan image --format json --output-file image.json spottr:scan > /dev/null || [ $? -eq 1 ]
           ./osv-scanner scan source --format json --output-file source.json -L go.mod -L web/package-lock.json > /dev/null || [ $? -eq 1 ]
+          ALERT_RELAY_TOKEN=$(sh tools/ci/relay-token.sh)
+          export ALERT_RELAY_TOKEN
           weekly=""
           if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "1" ]; then weekly="--weekly"; fi
           node tools/ci/image-report.mjs --image image=image.json --image source=source.json $weekly
