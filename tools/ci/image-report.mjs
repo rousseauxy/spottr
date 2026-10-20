@@ -169,6 +169,11 @@ if (weekly) {
   if (lines.length) {
     console.log(`Known, nothing to take yet:\n${lines.join('\n')}`);
     await post('notice', `${project}: what the images carry that has no fix yet`, lines.join('\n'));
+  } else if (!firing.length) {
+    // The weekly report says so when it is clean, or a clean image would never be heard of at all.
+    const scanned = values('--image').map((spec) => spec.split('=')[0]).join(', ');
+    console.log('Known: nothing.');
+    await post('notice', `${project}: nothing known in the images`, `osv.dev knows no vulnerability in ${scanned}.`);
   }
 }
 
