@@ -42,7 +42,8 @@ jobs:
           grep ' osv-scanner_linux_amd64$' osv-scanner_SHA256SUMS | sha256sum -c -
           install -m 755 osv-scanner_linux_amd64 osv-scanner
       - name: Build the image
-        run: docker build -q -t spottr:scan . > /dev/null
+        # --pull --no-cache: a cached base or apk upgrade layer would report packages the released image no longer has
+        run: docker build --pull --no-cache -q -t spottr:scan . > /dev/null
       - name: Scan and report
         env:
           EVENT: ${{ github.event_name }}
