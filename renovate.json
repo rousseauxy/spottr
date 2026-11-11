@@ -1,0 +1,16 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Spottr: Go modules, the web front end's npm packages and the Dockerfile images. Non-majors as one pull request on Monday mornings, majors one by one; nothing merges itself. The image that runs is built from a v* tag, so a merged update ships with the next release.",
+  "extends": ["local>infra/renovate"],
+  "enabledManagers": ["gomod", "npm", "dockerfile"],
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "Everything that is not a major: one pull request a week.",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "Go, npm and images (non-major)",
+      "groupSlug": "non-major",
+      "schedule": ["* 0-5 * * 1"]
+    }
+  ]
+}
