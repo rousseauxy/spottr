@@ -12,10 +12,10 @@
     "@sveltejs/adapter-static": "^4.0.0",
     "@sveltejs/kit": "^3.0.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
-    "@tailwindcss/vite": "^4.3.3",
-    "svelte": "^5.0.0",
-    "tailwindcss": "^4.3.3",
-    "vite": "^8.0.0"
+    "@tailwindcss/vite": "^4.3.5",
+    "svelte": "^5.57.3",
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.8"
   },
   "imports": {
     "#lib/*": "./src/lib/*"
